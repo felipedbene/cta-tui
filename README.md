@@ -26,6 +26,20 @@ Get a free key: https://www.transitchicago.com/developers/traintrackerapply/
 CTA_KEY=your_key_here cargo run --release
 ```
 
+## Install / distribute
+
+It's a single self-contained binary (~2.7 MB, TLS via rustls, station geometry
+baked in — no runtime files, no OpenSSL). The `release` profile is LTO+stripped.
+
+- **From source:** `cargo install --path .` (or grab `target/release/cta-tui`).
+- **Prebuilt binaries:** pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`,
+  which builds on each platform's native runner (macOS arm64/x86_64, Linux
+  x86_64/aarch64 musl-static, Windows x86_64) and attaches tarballs + SHA256s to
+  the GitHub Release.
+- **Local multi-target build:** `dist/release.sh` packages into `dist/out/`
+  (builds a macOS universal binary via `lipo`; for Linux/Windows targets it uses
+  `cargo-zigbuild` or `cross` if installed, else skips them).
+
 ## Config (env vars)
 
 | var              | default                          | meaning                         |
