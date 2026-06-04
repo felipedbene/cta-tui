@@ -23,14 +23,32 @@ const GEO_ROUTE = { red: "red", blue: "blue", brn: "brn", g: "g", org: "org", p:
 // ctaData boolean column -> CTA API route key
 const FLAG_ROUTE = { RED: "red", BLUE: "blue", G: "g", BRN: "brn", P: "p", Y: "y", Pnk: "pink", O: "org" };
 
-// --- polylines: concatenate all features per route ---
+// Equirectangular arc length of a [lon,lat] sequence (Chicago-scale planar).
+const COS_LAT = 0.743;
+const arcLen = (coords) => {
+  let d = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const dx = (coords[i][0] - coords[i - 1][0]) * COS_LAT;
+    const dy = coords[i][1] - coords[i - 1][1];
+    d += Math.hypot(dx, dy);
+  }
+  return d;
+};
+
+// --- polylines: pick the LONGEST single feature per route ---
+// Branched lines (Green) ship as overlapping features that share a trunk and
+// fan out; concatenating them folds the rail and scrambles ordering. Using the
+// single longest feature keeps the main line monotone with real termini; branch
+// stations/trains just project onto the nearest trunk point.
 const fc = JSON.parse(fs.readFileSync(linesPath, "utf8"));
 const polylines = {};
 for (const f of fc.features) {
   const r = GEO_ROUTE[f.properties.route];
   if (!r) continue;
   const coords = f.geometry.type === "LineString" ? f.geometry.coordinates : f.geometry.coordinates.flat();
-  (polylines[r] ||= []).push(...coords);
+  if (!polylines[r] || arcLen(coords) > arcLen(polylines[r])) {
+    polylines[r] = coords;
+  }
 }
 
 // --- stations: eval the non-module ctaData.js to get the array ---

@@ -24,6 +24,18 @@ const RED: Color = Color::Rgb(0xff, 0x3b, 0x3b);
 /// Rotating "radar dish" glyph for the header sweep.
 const SWEEP: [char; 4] = ['◜', '◝', '◞', '◟'];
 
+/// Scale an RGB color's brightness (used to dim the rail below its ticks).
+fn scale(c: Color, f: f64) -> Color {
+    match c {
+        Color::Rgb(r, g, b) => Color::Rgb(
+            (r as f64 * f) as u8,
+            (g as f64 * f) as u8,
+            (b as f64 * f) as u8,
+        ),
+        other => other,
+    }
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     let blink_on = (app.frame / 2) % 2 == 0; // ~0.5s on/off at 4 fps
     let sweep = SWEEP[(app.frame as usize / 2) % SWEEP.len()];
@@ -74,7 +86,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     .right_aligned();
 
     let mut legend_spans = Vec::new();
-    for (k, label) in [("q", "QUIT"), ("r", "RESCAN"), ("←/→", "LINE"), ("↑/↓", "SCROLL")] {
+    for (k, label) in [("q", "QUIT"), ("r", "RESCAN"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
         legend_spans.extend(key(k, label));
     }
     let legend = Line::from(legend_spans);
@@ -191,18 +203,21 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
     };
     let color = route_color(&key);
 
-    let title = Line::from(vec![
+    let mut title = vec![
         Span::styled(
             format!(" {} LINE ", label.to_uppercase()),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!("[{} TRK] ←/→ ", trains.len()),
-            Style::default().fg(DIM),
-        ),
-    ]);
+        Span::styled(format!("[{} TRK] ←/→ ", trains.len()), Style::default().fg(DIM)),
+    ];
+    if let Some(run) = app.selected_run() {
+        title.push(Span::styled(
+            format!("▌SEL #{run} "),
+            Style::default().fg(PHOS).add_modifier(Modifier::BOLD),
+        ));
+    }
 
-    let block = panel_block(title, color, true);
+    let block = panel_block(Line::from(title), color, true);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -216,7 +231,7 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
     if map_h > 0 {
         draw_track_map(f, split[0], app, &key, color, blink_on);
     }
-    draw_train_list(f, split[1], trains, app.scroll, color, blink_on);
+    draw_train_list(f, split[1], trains, app.selected, color, blink_on);
 }
 
 /// fio 4 — the ASCII track map: a straight rail with station ticks, the home
@@ -242,9 +257,10 @@ fn draw_track_map(f: &mut Frame, area: Rect, app: &App, key: &str, color: Color,
     let xof_station = |i: usize| col(i as f64 / last as f64);
     let home = app.home_label.to_lowercase();
 
-    // Rail: heavy line, station ticks, ◆ termini, ★ home. Priority keeps the
-    // star/terminus from being clobbered when stations crowd the same column.
-    let mut rail = RowBuf::new(w, '━', Style::default().fg(DIM));
+    // Rail: heavy line in a dimmed brand color, station ticks, ◆ termini, ★
+    // home. Priority keeps the star/terminus from being clobbered when stations
+    // crowd the same column.
+    let mut rail = RowBuf::new(w, '━', Style::default().fg(scale(color, 0.45)));
     let mut home_col: Option<usize> = None;
     for (i, s) in rt.stations.iter().enumerate() {
         let x = xof_station(i);
@@ -264,11 +280,21 @@ fn draw_track_map(f: &mut Frame, area: Rect, app: &App, key: &str, color: Color,
     // the upper rail (▸/▶), leftward the lower (◂/◀); filled = approaching.
     let mut up = RowBuf::new(w, ' ', Style::default());
     let mut dn = RowBuf::new(w, ' ', Style::default());
-    for t in trains_of(app) {
+    for (i, t) in trains_of(app).iter().enumerate() {
         let (Some(lat), Some(lon)) = (t.lat, t.lon) else { continue };
         let Some(pj) = rt.project(lat, lon) else { continue };
         let x = col(rt.pos_to_slot(pj.pos01));
-        let (style, prio) = if t.delayed {
+        let sel = i == app.selected;
+        let (style, prio) = if sel {
+            // Selected train always wins and is always drawn (ignores blink).
+            (
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(PHOS)
+                    .add_modifier(Modifier::BOLD),
+                4,
+            )
+        } else if t.delayed {
             if !blink_on {
                 continue; // blink off → leave the cell empty this frame
             }
@@ -319,13 +345,30 @@ fn draw_track_map(f: &mut Frame, area: Rect, app: &App, key: &str, color: Color,
         }
     }
 
+    // Radar sweep: a bright column tracks left→right across the rail, with a
+    // dimmer trailing cell, so the board reads as actively scanning.
+    let sweep = (app.frame as usize * 2) % w;
+    let trail = sweep.saturating_sub(1);
+    rail.tint(sweep, Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
+    rail.tint(trail, Style::default().fg(PHOS));
+    up.tint(sweep, Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
+    dn.tint(sweep, Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
+
     let rows = vec![up.into_line(), rail.into_line(), dn.into_line(), lab.into_line()];
     f.render_widget(Paragraph::new(rows), area);
 }
 
-fn draw_train_list(f: &mut Frame, area: Rect, trains: &[crate::cta::Train], scroll: usize, color: Color, blink_on: bool) {
+fn draw_train_list(f: &mut Frame, area: Rect, trains: &[crate::cta::Train], selected: usize, color: Color, blink_on: bool) {
+    // Auto-scroll so the selected train stays visible in the window.
+    let visible = area.height as usize;
+    let scroll = if visible > 0 && selected >= visible {
+        selected - visible + 1
+    } else {
+        0
+    };
+
     let mut rows: Vec<ListItem> = Vec::new();
-    for t in trains.iter().skip(scroll) {
+    for (i, t) in trains.iter().enumerate().skip(scroll) {
         let eta = fmt_eta(t.eta_min);
         let (flag_style, tag) = if t.delayed {
             let s = if blink_on {
@@ -339,11 +382,13 @@ fn draw_train_list(f: &mut Frame, area: Rect, trains: &[crate::cta::Train], scro
         } else {
             (Style::default().fg(Color::White), "")
         };
+        let sel = i == selected;
+        let cursor = if sel { "▌" } else { " " };
         // Flag goes up front (after ETA) so APP/DLY can never clip off the
         // right edge on a narrow terminal. Then next stop, then terminal dest.
         let line = Line::from(vec![
             Span::styled(
-                format!(" {} ", heading_arrow(t.heading)),
+                format!("{cursor}{} ", heading_arrow(t.heading)),
                 Style::default().fg(color),
             ),
             Span::styled(format!("#{:<4} ", t.run), Style::default().fg(DIM)),
@@ -358,7 +403,13 @@ fn draw_train_list(f: &mut Frame, area: Rect, trains: &[crate::cta::Train], scro
                 Style::default().fg(DIM),
             ),
         ]);
-        rows.push(ListItem::new(line));
+        // Selected row gets a phosphor underline so it reads against the colors.
+        let item = if sel {
+            ListItem::new(line).style(Style::default().add_modifier(Modifier::UNDERLINED | Modifier::BOLD))
+        } else {
+            ListItem::new(line)
+        };
+        rows.push(item);
     }
     if rows.is_empty() {
         rows.push(ListItem::new(Span::styled(
@@ -491,6 +542,13 @@ impl RowBuf {
     fn write_str(&mut self, x0: usize, s: &str, style: Style) {
         for (i, c) in s.chars().enumerate() {
             self.put(x0 + i, c, style);
+        }
+    }
+
+    /// Recolor a cell without changing its glyph (used by the radar sweep).
+    fn tint(&mut self, x: usize, style: Style) {
+        if x < self.st.len() {
+            self.st[x] = style;
         }
     }
 

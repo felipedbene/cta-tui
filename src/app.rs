@@ -6,8 +6,8 @@ use ratatui::style::Color;
 
 pub struct App {
     pub snap: Snapshot,
-    pub focused: usize, // index into snap.boards
-    pub scroll: usize,
+    pub focused: usize,  // index into snap.boards
+    pub selected: usize, // index into the focused board's trains
     pub loading: bool,
     pub should_quit: bool,
     pub home_label: String,
@@ -20,7 +20,7 @@ impl App {
         Self {
             snap: Snapshot::default(),
             focused: 0,
-            scroll: 0,
+            selected: 0,
             loading: true,
             should_quit: false,
             home_label,
@@ -33,34 +33,55 @@ impl App {
         self.frame = self.frame.wrapping_add(1);
     }
 
+    /// Number of trains on the focused line.
+    pub fn focused_len(&self) -> usize {
+        self.snap.boards.get(self.focused).map_or(0, |b| b.trains.len())
+    }
+
     pub fn apply(&mut self, snap: Snapshot) {
         self.loading = false;
         if self.focused >= snap.boards.len() {
             self.focused = 0;
         }
         self.snap = snap;
+        let len = self.focused_len();
+        if self.selected >= len {
+            self.selected = len.saturating_sub(1);
+        }
     }
 
     pub fn next_route(&mut self) {
         if !self.snap.boards.is_empty() {
             self.focused = (self.focused + 1) % self.snap.boards.len();
-            self.scroll = 0;
+            self.selected = 0;
         }
     }
 
     pub fn prev_route(&mut self) {
         if !self.snap.boards.is_empty() {
-            self.focused =
-                (self.focused + self.snap.boards.len() - 1) % self.snap.boards.len();
-            self.scroll = 0;
+            self.focused = (self.focused + self.snap.boards.len() - 1) % self.snap.boards.len();
+            self.selected = 0;
         }
     }
 
-    pub fn scroll_down(&mut self) {
-        self.scroll = self.scroll.saturating_add(1);
+    /// Move the train cursor; `select_next` saturates at the last train.
+    pub fn select_next(&mut self) {
+        let len = self.focused_len();
+        if len > 0 {
+            self.selected = (self.selected + 1).min(len - 1);
+        }
     }
-    pub fn scroll_up(&mut self) {
-        self.scroll = self.scroll.saturating_sub(1);
+    pub fn select_prev(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
+    }
+
+    /// The currently selected train's run number, if any.
+    pub fn selected_run(&self) -> Option<&str> {
+        self.snap
+            .boards
+            .get(self.focused)
+            .and_then(|b| b.trains.get(self.selected))
+            .map(|t| t.run.as_str())
     }
 }
 

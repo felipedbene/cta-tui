@@ -168,8 +168,8 @@ async fn run<B: ratatui::backend::Backend>(
                             KeyCode::Char('r') => { let _ = refresh_tx.try_send(()); app.loading = true; }
                             KeyCode::Right | KeyCode::Tab => app.next_route(),
                             KeyCode::Left  => app.prev_route(),
-                            KeyCode::Down  => app.scroll_down(),
-                            KeyCode::Up    => app.scroll_up(),
+                            KeyCode::Down  => app.select_next(),
+                            KeyCode::Up    => app.select_prev(),
                             _ => {}
                         }
                     }

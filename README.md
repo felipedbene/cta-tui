@@ -49,7 +49,9 @@ CTA_RENDER=1 CTA_KEY=… cargo run    # draw one frame off-screen and print as t
 - **left** — system board: the 8 'L' lines + live status (keyless `routes.aspx`).
 - **center** — focused line. A **track map** strip on top (fio 4, below) and the
   train list under it: heading arrow, run #, ETA, DLY (amber) / APP (green)
-  flags, next stop, terminal dest. `←/→` cycles lines, `↑/↓` scrolls the list.
+  flags, next stop, terminal dest. `←/→` cycles lines; `↑/↓` moves the train
+  cursor — the selected train is highlighted in the list and on the map, and
+  its run # shows in the panel title.
 - **right** — home-station arrivals ticker (`ttarrivals.aspx`).
 
 ## Track map (fio 4) — `src/track.rs` + `scripts/build_track.mjs`
@@ -71,9 +73,13 @@ downtown stretch stays legible.
 node scripts/build_track.mjs ../cta   # regenerate src/track.json from the Worker
 ```
 
-Caveat: branched lines (Green) concatenate their polyline features, so the very
-ends and branch trains snap to the nearest trunk point — termini labels there
-are approximate. Single-feature lines (Red, Blue, …) are exact.
+A radar sweep tracks across the rail each frame, and the rail is drawn in a
+dimmed brand color with brighter ticks.
+
+Caveat: branched lines (Green) ship as overlapping geojson features; the build
+script keeps the **longest** one as the main line (so termini are real — Green
+is Harlem/Lake ↔ Ashland/63rd), and the other branch's stations/trains project
+onto the nearest trunk point. Single-feature lines (Red, Blue, …) are exact.
 
 ## Data layer (`src/cta.rs`)
 
@@ -91,6 +97,7 @@ normalizes that everywhere.
 - **fio 3** — Kedzie approach notifier: bell + flash when a Green train ≤6 min.
 - **fio 4** — ✅ done: ASCII track map (see above).
 - **fio 5** — desktop notification on delay, via `notify-rust`.
-- per-branch track maps for the Green/branched lines (fix the terminus caveat).
+- per-branch track maps for the Green/branched lines (show both south termini).
+- optional vertical track orientation for tall/narrow terminals.
 
 [ratatui]: https://ratatui.rs
