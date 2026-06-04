@@ -73,8 +73,14 @@ downtown stretch stays legible.
 node scripts/build_track.mjs ../cta   # regenerate src/track.json from the Worker
 ```
 
-A radar sweep tracks across the rail each frame, and the rail is drawn in a
-dimmed brand color with brighter ticks.
+The rail is drawn in a dimmed brand color with brighter ticks. **Landmark**
+stations — major downtown/transfer anchors (Clark/Lake, Roosevelt, Fullerton,
+Belmont, Howard, …) — are marked `◈` and labeled (a two-row packer drops any
+label that would collide), so the line is navigable between its termini.
+
+Press `/` to **fuzzy-find** any station across all 8 lines; selecting one jumps
+to that line and **zooms** the map to a ~9-station window centered on it, with
+every station labeled and trains in-window placed (`«`/`»` count the rest).
 
 Caveat: branched lines (Green) ship as overlapping geojson features; the build
 script keeps the **longest** one as the main line (so termini are real — Green

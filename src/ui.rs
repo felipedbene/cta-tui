@@ -24,6 +24,32 @@ const RED: Color = Color::Rgb(0xff, 0x3b, 0x3b);
 /// Rotating "radar dish" glyph for the header sweep.
 const SWEEP: [char; 4] = ['◜', '◝', '◞', '◟'];
 
+/// Recognizable system anchors — major downtown/transfer stations — labeled on
+/// the full rail so the line is navigable between its termini. Curated (not
+/// transfer-count derived) because CTA reuses station names across physically
+/// separate stops (e.g. three different "Western"s).
+const LANDMARKS: &[&str] = &[
+    "clark/lake",
+    "state/lake",
+    "lake",
+    "washington/wabash",
+    "adams/wabash",
+    "roosevelt",
+    "jackson",
+    "washington",
+    "monroe",
+    "fullerton",
+    "belmont",
+    "howard",
+    "clark/division",
+    "wilson",
+];
+
+fn is_landmark(name: &str) -> bool {
+    let n = name.trim().to_lowercase();
+    LANDMARKS.contains(&n.as_str())
+}
+
 /// Scale an RGB color's brightness (used to dim the rail below its ticks).
 fn scale(c: Color, f: f64) -> Color {
     match c {
@@ -381,6 +407,8 @@ fn draw_track_full(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::Rout
             home_col = Some(x);
         } else if i == 0 || i == n - 1 {
             rail.put_prio(x, '◆', Style::default().fg(color).add_modifier(Modifier::BOLD), 2);
+        } else if is_landmark(&s.name) {
+            rail.put_prio(x, '◈', Style::default().fg(color).add_modifier(Modifier::BOLD), 2);
         } else {
             rail.put_prio(x, '┿', Style::default().fg(color), 1);
         }
@@ -433,30 +461,38 @@ fn draw_track_full(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::Rout
         row.put_prio(x, glyph, style, prio);
     }
 
-    // Label row: termini at the ends, home station name centered under its ★.
-    let mut lab = RowBuf::new(w, ' ', Style::default().fg(DIM));
-    let mut left_end = 0usize; // first free column after the left terminus label
-    let mut right_start = w; // first column occupied by the right terminus label
-    if let (Some(first), Some(last)) = (rt.stations.first(), rt.stations.last()) {
-        let third = w / 3;
-        let l = trunc(&first.name, third);
-        lab.write_str(0, &l, Style::default().fg(DIM));
-        left_end = l.chars().count();
-        let r = trunc(&last.name, third);
-        right_start = w.saturating_sub(r.chars().count());
-        lab.write_str(right_start, &r, Style::default().fg(DIM));
+    // Two staggered label rows. Termini are pinned to the ends; home and
+    // landmark stations are packed in by priority, skipping any that would
+    // collide with an already-placed label.
+    let mut packer = LabelPacker::new(w);
+    if let Some(first) = rt.stations.first() {
+        packer.pin_left(&trunc(&first.name, w / 3), Style::default().fg(DIM));
     }
-    // Label home only if it sits clear of both terminus labels (1-col gap).
+    if let Some(last) = rt.stations.last() {
+        packer.pin_right(&trunc(&last.name, w / 3), Style::default().fg(DIM));
+    }
     if let Some(hx) = home_col {
-        let label = trunc(&app.home_label.to_uppercase(), 14);
-        let len = label.chars().count();
-        let start = hx.saturating_sub(len / 2).min(w.saturating_sub(len));
-        if start > left_end && start + len < right_start.saturating_sub(1) {
-            lab.write_str(start, &label, Style::default().fg(AMBER).add_modifier(Modifier::BOLD));
-        }
+        packer.place(
+            hx,
+            &trunc(&app.home_label.to_uppercase(), 14),
+            Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+        );
     }
+    for (i, s) in rt.stations.iter().enumerate() {
+        if i == 0 || i == n - 1 || !is_landmark(&s.name) {
+            continue;
+        }
+        packer.place(xof_station(i), &trunc(&s.name, 13), Style::default().fg(Color::White));
+    }
+    let (lab_a, lab_b) = packer.finish();
 
-    let rows = vec![up.into_line(), rail.into_line(), dn.into_line(), lab.into_line()];
+    let rows = vec![
+        up.into_line(),
+        rail.into_line(),
+        dn.into_line(),
+        lab_a.into_line(),
+        lab_b.into_line(),
+    ];
     f.render_widget(Paragraph::new(rows), area);
 }
 
@@ -774,6 +810,69 @@ impl RowBuf {
             spans.push(Span::styled(buf, style));
         }
         Line::from(spans)
+    }
+}
+
+/// Packs station labels into two staggered rows, skipping any that would
+/// collide (1-column gap) with one already placed. Termini are pinned to the
+/// ends; everything else is centered under its column, trying row A then B.
+struct LabelPacker {
+    w: usize,
+    rows: [RowBuf; 2],
+    occ: [Vec<(usize, usize)>; 2],
+}
+
+impl LabelPacker {
+    fn new(w: usize) -> Self {
+        LabelPacker {
+            w,
+            rows: [
+                RowBuf::new(w, ' ', Style::default()),
+                RowBuf::new(w, ' ', Style::default()),
+            ],
+            occ: [Vec::new(), Vec::new()],
+        }
+    }
+
+    fn fits(&self, row: usize, start: usize, end: usize) -> bool {
+        self.occ[row]
+            .iter()
+            .all(|&(s, e)| end + 1 <= s || start >= e + 1)
+    }
+
+    fn write(&mut self, row: usize, start: usize, text: &str, style: Style) {
+        self.rows[row].write_str(start, text, style);
+        self.occ[row].push((start, start + text.chars().count()));
+    }
+
+    fn pin_left(&mut self, text: &str, style: Style) {
+        self.write(0, 0, text, style);
+    }
+
+    fn pin_right(&mut self, text: &str, style: Style) {
+        let start = self.w.saturating_sub(text.chars().count());
+        self.write(0, start, text, style);
+    }
+
+    /// Place a label centered on `center`, in the first row where it fits.
+    fn place(&mut self, center: usize, text: &str, style: Style) {
+        let len = text.chars().count();
+        if len == 0 || len > self.w {
+            return;
+        }
+        let start = center.saturating_sub(len / 2).min(self.w - len);
+        let end = start + len;
+        for row in 0..2 {
+            if self.fits(row, start, end) {
+                self.write(row, start, text, style);
+                return;
+            }
+        }
+    }
+
+    fn finish(self) -> (RowBuf, RowBuf) {
+        let [a, b] = self.rows;
+        (a, b)
     }
 }
 
