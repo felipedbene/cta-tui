@@ -105,6 +105,9 @@ async fn main() -> Result<()> {
             for c in q.chars() { app.search_input(c); }
             app.commit_search();
         }
+        if std::env::var("CTA_ALERTS").is_ok() {
+            app.show_alerts = true;
+        }
         let w: u16 = std::env::var("CTA_COLS").ok().and_then(|v| v.parse().ok()).unwrap_or(110);
         let h: u16 = std::env::var("CTA_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(26);
         let backend = ratatui::backend::TestBackend::new(w, h);
@@ -216,10 +219,12 @@ async fn run<B: ratatui::backend::Backend>(
                             match k.code {
                                 KeyCode::Char('q') => app.should_quit = true,
                                 KeyCode::Esc => {
-                                    if app.zoom.is_some() { app.clear_zoom(); }
+                                    if app.show_alerts { app.show_alerts = false; }
+                                    else if app.zoom.is_some() { app.clear_zoom(); }
                                     else { app.should_quit = true; }
                                 }
                                 KeyCode::Char('/') => app.open_search(),
+                                KeyCode::Char('a') => app.toggle_alerts(),
                                 KeyCode::Char('r') => { let _ = refresh_tx.try_send(()); app.loading = true; }
                                 KeyCode::Right | KeyCode::Tab => { app.clear_zoom(); app.next_route(); }
                                 KeyCode::Left  => { app.clear_zoom(); app.prev_route(); }

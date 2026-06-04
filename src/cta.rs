@@ -75,12 +75,22 @@ pub struct RouteStatus {
     pub status_color_hex: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct Alert {
+    pub headline: String,
+    pub short: String,
+    pub impact: String,
+    pub major: bool,
+    pub routes: Vec<String>, // impacted rail route keys (lowercased: g, brn, ...)
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub updated: String,
     pub boards: Vec<RouteBoard>,
     pub arrivals: Vec<Arrival>,
     pub statuses: Vec<RouteStatus>,
+    pub alerts: Vec<Alert>,
     pub error: Option<String>,
 }
 
@@ -171,6 +181,42 @@ struct RawRouteInfo {
     status_color: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct AlertsResp {
+    #[serde(rename = "CTAAlerts")]
+    cta_alerts: CtaAlerts,
+}
+#[derive(Deserialize)]
+struct CtaAlerts {
+    #[serde(rename = "Alert")]
+    alert: Option<OneOrMany<RawAlert>>,
+}
+#[derive(Deserialize)]
+struct RawAlert {
+    #[serde(rename = "Headline")]
+    headline: Option<String>,
+    #[serde(rename = "ShortDescription")]
+    short_description: Option<String>,
+    #[serde(rename = "Impact")]
+    impact: Option<String>,
+    #[serde(rename = "MajorAlert")]
+    major_alert: Option<String>,
+    #[serde(rename = "ImpactedService")]
+    impacted_service: Option<RawImpacted>,
+}
+#[derive(Deserialize)]
+struct RawImpacted {
+    #[serde(rename = "Service")]
+    service: Option<OneOrMany<RawService>>,
+}
+#[derive(Deserialize)]
+struct RawService {
+    #[serde(rename = "ServiceType")]
+    service_type: Option<String>,
+    #[serde(rename = "ServiceId")]
+    service_id: Option<String>,
+}
+
 // ---------- Helpers ----------
 
 fn truthy(s: &Option<String>) -> bool {
@@ -227,6 +273,9 @@ impl Cta {
         }
         if let Ok(s) = self.statuses().await {
             snap.statuses = s;
+        }
+        if let Ok(a) = self.alerts(routes).await {
+            snap.alerts = a;
         }
         snap
     }
@@ -306,6 +355,36 @@ impl Cta {
             })
             .collect();
         Ok(statuses)
+    }
+
+    /// Active Customer Alerts for the given routes (keyless). Each alert is
+    /// tagged with the rail lines it impacts (ServiceType "R"), so the UI can
+    /// filter to the focused line. We keep the plain ShortDescription and skip
+    /// the CDATA/HTML FullDescription.
+    async fn alerts(&self, routes: &[&str]) -> Result<Vec<Alert>> {
+        let url = format!(
+            "{ALERTS_BASE}/alerts.aspx?activeonly=true&routeid={}&outputType=JSON",
+            routes.join(",")
+        );
+        let resp: AlertsResp = self.http.get(url).send().await?.json().await?;
+        let alerts = flat(resp.cta_alerts.alert)
+            .into_iter()
+            .map(|a| {
+                let routes = flat(a.impacted_service.and_then(|s| s.service))
+                    .into_iter()
+                    .filter(|s| s.service_type.as_deref() == Some("R"))
+                    .filter_map(|s| s.service_id.map(|id| id.to_lowercase()))
+                    .collect();
+                Alert {
+                    headline: a.headline.unwrap_or_default(),
+                    short: a.short_description.unwrap_or_default(),
+                    impact: a.impact.unwrap_or_default(),
+                    major: truthy(&a.major_alert),
+                    routes,
+                }
+            })
+            .collect();
+        Ok(alerts)
     }
 }
 

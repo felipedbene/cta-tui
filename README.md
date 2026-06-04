@@ -83,6 +83,7 @@ label that would collide), so the line is navigable between its termini.
 Press `/` to **fuzzy-find** any station across all 8 lines; selecting one jumps
 to that line and **zooms** the map to a ~9-station window centered on it, with
 every station labeled and trains in-window placed (`«`/`»` count the rest).
+Press `a` for the focused line's active **service alerts**.
 
 Caveat: branched lines (Green) ship as overlapping geojson features; the build
 script keeps the **longest** one as the main line (so termini are real — Green
@@ -101,7 +102,9 @@ normalizes that everywhere.
 
 ## Roadmap (next fios)
 
-- **fio 2** — Green Line alerts panel (`alerts.aspx?routeid=g`, has CDATA noise).
+- **fio 2** — ✅ done: alerts overlay. `a` shows active Customer Alerts
+  (`alerts.aspx`) for the focused line — `⚠N` badge in the title; uses the
+  plain ShortDescription, skipping the CDATA FullDescription.
 - **fio 3** — ✅ done: home-station approach notifier (bell + flashing arrivals
   panel when a train is within `CTA_ALERT_MIN`).
 - **fio 4** — ✅ done: ASCII track map (see above).

@@ -29,6 +29,7 @@ pub struct App {
     pub track: TrackMap,
     pub search: Option<Search>,
     pub zoom: Option<Zoom>,
+    pub show_alerts: bool,
     // fio 3 — home-station approach notifier.
     pub alert_min: i64,           // threshold in minutes (0 disables)
     alerted: HashSet<String>,     // runs we've already alerted at the home station
@@ -55,6 +56,7 @@ impl App {
             track: TrackMap::load(),
             search: None,
             zoom: None,
+            show_alerts: false,
             alert_min,
             alerted: HashSet::new(),
             started: false,
@@ -261,6 +263,20 @@ impl App {
 
     pub fn clear_zoom(&mut self) {
         self.zoom = None;
+    }
+
+    pub fn toggle_alerts(&mut self) {
+        self.show_alerts = !self.show_alerts;
+    }
+
+    /// Active alerts impacting the given route key.
+    pub fn alerts_for(&self, key: &str) -> Vec<&crate::cta::Alert> {
+        let key = key.to_lowercase();
+        self.snap
+            .alerts
+            .iter()
+            .filter(|a| a.routes.iter().any(|r| *r == key))
+            .collect()
     }
 
     /// Route key the center panel should display: the zoom target if zoomed,

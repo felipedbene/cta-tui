@@ -104,7 +104,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     .right_aligned();
 
     let mut legend_spans = Vec::new();
-    for (k, label) in [("/", "FIND"), ("q", "QUIT"), ("r", "RESCAN"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
+    for (k, label) in [("/", "FIND"), ("a", "ALERTS"), ("q", "QUIT"), ("r", "RESCAN"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
         legend_spans.extend(key(k, label));
     }
     let legend = Line::from(legend_spans);
@@ -147,9 +147,89 @@ pub fn draw(f: &mut Frame, app: &App) {
     train_panel(f, body[1], app, blink_on);
     arrivals_panel(f, body[2], app, blink_on);
 
+    if app.show_alerts {
+        alerts_overlay(f, inner, app);
+    }
     if app.search.is_some() {
         search_overlay(f, inner, app, blink_on);
     }
+}
+
+/// Centered popup listing active Customer Alerts for the focused line.
+fn alerts_overlay(f: &mut Frame, body: Rect, app: &App) {
+    let key = app.view_route().unwrap_or_default();
+    let alerts = app.alerts_for(&key);
+
+    let w = 70.min(body.width.saturating_sub(2));
+    let h = 18.min(body.height.saturating_sub(2));
+    if w < 20 || h < 5 {
+        return;
+    }
+    let x = body.x + (body.width.saturating_sub(w)) / 2;
+    let y = body.y + (body.height.saturating_sub(h)) / 2;
+    let area = Rect { x, y, width: w, height: h };
+    f.render_widget(Clear, area);
+
+    let color = route_color(&key);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(color))
+        .title_top(Span::styled(
+            format!(" ⚠ {} LINE ALERTS ", crate::cta::pretty_route(&key).to_uppercase()),
+            Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            format!(" {} active   esc/a close ", alerts.len()),
+            Style::default().fg(DIM),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if alerts.is_empty() {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                " no active alerts on this line",
+                Style::default().fg(GRID),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    // Two rows per alert: headline (severity-colored) + dim short description.
+    let cap = (inner.height as usize / 2).max(1);
+    let body_w = inner.width as usize;
+    let mut items: Vec<ListItem> = alerts
+        .iter()
+        .take(cap)
+        .map(|a| {
+            let sev = if a.major { RED } else { AMBER };
+            let head = Line::from(vec![
+                Span::styled("● ", Style::default().fg(sev)),
+                Span::styled(
+                    format!("[{}] ", trunc(&a.impact, 18)),
+                    Style::default().fg(sev).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    trunc(&a.headline, body_w.saturating_sub(24)),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                ),
+            ]);
+            let desc = Line::from(Span::styled(
+                format!("  {}", trunc(&a.short, body_w.saturating_sub(3))),
+                Style::default().fg(DIM),
+            ));
+            ListItem::new(vec![head, desc])
+        })
+        .collect();
+    if alerts.len() > cap {
+        items.push(ListItem::new(Span::styled(
+            format!("  (+{} more)", alerts.len() - cap),
+            Style::default().fg(DIM),
+        )));
+    }
+    f.render_widget(List::new(items), inner);
 }
 
 /// Centered fuzzy-finder popup over the body.
@@ -329,6 +409,13 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
         ),
         Span::styled(format!("[{} TRK] ←/→ ", trains.len()), Style::default().fg(DIM)),
     ];
+    let n_alerts = app.alerts_for(&key).len();
+    if n_alerts > 0 {
+        title.push(Span::styled(
+            format!("⚠{n_alerts} "),
+            Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+        ));
+    }
     if let Some(c) = zoom_center {
         // Zoomed: name the station we're centered on.
         if let Some(st) = app.track.route(&key).and_then(|rt| rt.stations.get(c)) {
