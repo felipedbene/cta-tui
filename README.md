@@ -85,10 +85,12 @@ to that line and **zooms** the map to a ~9-station window centered on it, with
 every station labeled and trains in-window placed (`«`/`»` count the rest).
 Press `a` for the focused line's active **service alerts**.
 
-Caveat: branched lines (Green) ship as overlapping geojson features; the build
-script keeps the **longest** one as the main line (so termini are real — Green
-is Harlem/Lake ↔ Ashland/63rd), and the other branch's stations/trains project
-onto the nearest trunk point. Single-feature lines (Red, Blue, …) are exact.
+Branched lines (Green) ship as overlapping geojson features sharing a trunk.
+The build script keeps each as a branch and assigns stations by proximity, so
+on a tall enough panel the map draws **both** branches stacked (Harlem/Lake ↔
+Ashland/63rd and Harlem/Lake ↔ Cottage Grove); the trunk and home star appear
+on both, and each train rides its nearest branch. Short panels fall back to the
+primary strip. Single-feature lines (Red, Blue, …) draw one strip.
 
 ## Data layer (`src/cta.rs`)
 
@@ -110,7 +112,7 @@ normalizes that everywhere.
 - **fio 4** — ✅ done: ASCII track map (see above).
 - **fio 5** — ✅ done: desktop notification on delay. Shells out to the platform
   notifier (`osascript` / `notify-send`) — no extra crate. `CTA_NOTIFY=0` off.
-- per-branch track maps for the Green/branched lines (show both south termini).
+- ✅ done: per-branch track maps for Green (both south termini shown stacked).
 - optional vertical track orientation for tall/narrow terminals.
 
 [ratatui]: https://ratatui.rs

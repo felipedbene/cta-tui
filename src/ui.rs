@@ -397,8 +397,9 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
         .map(|b| b.label.clone())
         .unwrap_or_else(|| crate::cta::pretty_route(&key));
     let color = route_color(&key);
-    let zoom_center = match &app.zoom {
-        Some(z) if z.route == key => Some(z.index),
+    let branches = app.track.branches(&key);
+    let zoom = match &app.zoom {
+        Some(z) if z.route == key => Some((z.branch, z.index)),
         _ => None,
     };
 
@@ -416,9 +417,9 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
             Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
         ));
     }
-    if let Some(c) = zoom_center {
+    if let Some((b, c)) = zoom {
         // Zoomed: name the station we're centered on.
-        if let Some(st) = app.track.route(&key).and_then(|rt| rt.stations.get(c)) {
+        if let Some(st) = branches.get(b).and_then(|rt| rt.stations.get(c)) {
             title.push(Span::styled(
                 format!("⊙ {} ", st.name.to_uppercase()),
                 Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
@@ -435,32 +436,75 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Track map strip on top when there's vertical room, train list below.
-    let map_h: u16 = if inner.height >= 9 { 5 } else { 0 };
+    // A branched line (Green) shows both branches stacked when there's room;
+    // otherwise a single strip. The map sits above the train list.
+    let branched_room = branches.len() > 1 && inner.height >= 16 && zoom.is_none();
+    let map_h: u16 = if branched_room {
+        12
+    } else if inner.height >= 9 {
+        5
+    } else {
+        0
+    };
     let split = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(map_h), Constraint::Min(0)])
         .split(inner);
 
     if map_h > 0 {
-        match app.track.route(&key) {
-            Some(rt) if zoom_center.is_some() => {
-                draw_track_zoom(f, split[0], app, rt, &key, color, zoom_center.unwrap(), blink_on)
+        if let Some((b, c)) = zoom {
+            if let Some(rt) = branches.get(b) {
+                draw_track_zoom(f, split[0], rt, &branch_trains(app, branches, b), color, c, blink_on);
             }
-            Some(rt) => draw_track_full(f, split[0], app, rt, &key, color, blink_on),
-            None => f.render_widget(
+        } else if branched_room {
+            // One sub-strip per branch, trains assigned to their nearest branch.
+            let halves = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(6), Constraint::Length(6)])
+                .split(split[0]);
+            for (b, rt) in branches.iter().enumerate().take(2) {
+                draw_track_full(f, halves[b], app, rt, &branch_trains(app, branches, b), color, blink_on);
+            }
+        } else if let Some(rt) = branches.first() {
+            draw_track_full(f, split[0], app, rt, &branch_trains(app, branches, 0), color, blink_on);
+        } else {
+            f.render_widget(
                 Paragraph::new(Span::styled(" no map data", Style::default().fg(DIM))),
                 split[0],
-            ),
+            );
         }
     }
     draw_train_list(f, split[1], trains, app.selected, color, blink_on);
 }
 
+/// Trains assigned to branch `b`: each train goes to the branch whose rail it's
+/// physically nearest (ties → the primary branch). Trunk trains thus land on
+/// the primary strip; south-branch trains on theirs.
+fn branch_trains<'a>(app: &'a App, branches: &[crate::track::RouteTrack], b: usize) -> Vec<&'a crate::cta::Train> {
+    let key = app.view_route().unwrap_or_default();
+    if branches.len() <= 1 {
+        return trains_of_key(app, &key).iter().collect();
+    }
+    trains_of_key(app, &key)
+        .iter()
+        .filter(|t| {
+            let (Some(lat), Some(lon)) = (t.lat, t.lon) else { return false };
+            let nearest = branches
+                .iter()
+                .enumerate()
+                .filter_map(|(i, rt)| rt.project(lat, lon).map(|p| (i, p.dist2)))
+                .min_by(|a, c| a.1.partial_cmp(&c.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            nearest == b
+        })
+        .collect()
+}
+
 /// fio 4 — the ASCII track map: a straight rail with station ticks, the home
 /// station starred, and live trains projected onto it (inbound above the rail,
 /// outbound below). Conveys at a glance where every train on the line is.
-fn draw_track_full(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::RouteTrack, key: &str, color: Color, blink_on: bool) {
+fn draw_track_full(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::RouteTrack, trains: &[&crate::cta::Train], color: Color, blink_on: bool) {
     let w = area.width as usize;
     if w < 8 {
         return;
@@ -498,11 +542,12 @@ fn draw_track_full(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::Rout
     // the upper rail (▸/▶), leftward the lower (◂/◀); filled = approaching.
     let mut up = RowBuf::new(w, ' ', Style::default());
     let mut dn = RowBuf::new(w, ' ', Style::default());
-    for (i, t) in trains_of_key(app, key).iter().enumerate() {
+    let sel_run = app.selected_run();
+    for &t in trains {
         let (Some(lat), Some(lon)) = (t.lat, t.lon) else { continue };
         let Some(pj) = rt.project(lat, lon) else { continue };
         let x = col(rt.pos_to_slot(pj.pos01));
-        let sel = i == app.selected;
+        let sel = !t.run.is_empty() && Some(t.run.as_str()) == sel_run;
         let (style, prio) = if sel {
             // Selected train always wins and is always drawn (ignores blink).
             (
@@ -580,7 +625,7 @@ fn draw_track_full(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::Rout
 /// Zoomed track view: a window of ~9 stations centered on `center`, every one
 /// labeled (staggered across two rows), the target starred, trains in the
 /// window placed, and «N»/«N» counts for trains beyond either edge.
-fn draw_track_zoom(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::RouteTrack, key: &str, color: Color, center: usize, blink_on: bool) {
+fn draw_track_zoom(f: &mut Frame, area: Rect, rt: &crate::track::RouteTrack, trains: &[&crate::cta::Train], color: Color, center: usize, blink_on: bool) {
     let w = area.width as usize;
     if w < 8 {
         return;
@@ -615,7 +660,7 @@ fn draw_track_zoom(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::Rout
     let mut up = RowBuf::new(w, ' ', Style::default());
     let mut dn = RowBuf::new(w, ' ', Style::default());
     let (mut left_off, mut right_off) = (0u32, 0u32);
-    for t in trains_of_key(app, key) {
+    for &t in trains {
         let (Some(lat), Some(lon)) = (t.lat, t.lon) else { continue };
         let Some(pj) = rt.project(lat, lon) else { continue };
         let idx = rt.pos_to_index(pj.pos01);

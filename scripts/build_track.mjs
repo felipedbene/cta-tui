@@ -37,19 +37,38 @@ const arcLen = (coords) => {
 
 // --- polylines: pick the LONGEST single feature per route ---
 // Branched lines (Green) ship as overlapping features that share a trunk and
-// fan out; concatenating them folds the rail and scrambles ordering. Using the
-// single longest feature keeps the main line monotone with real termini; branch
-// stations/trains just project onto the nearest trunk point.
+// fan out from a shared trunk to two south termini. We keep EACH feature as a
+// branch (a full line from the common terminus to its own end), so the map can
+// draw both. Stations are assigned to a branch by proximity to its polyline, so
+// trunk stations appear on both branches and branch-tail stations only on theirs.
 const fc = JSON.parse(fs.readFileSync(linesPath, "utf8"));
-const polylines = {};
+const branchPolys = {}; // route -> [coords, ...] (one per feature, longest first)
 for (const f of fc.features) {
   const r = GEO_ROUTE[f.properties.route];
   if (!r) continue;
   const coords = f.geometry.type === "LineString" ? f.geometry.coordinates : f.geometry.coordinates.flat();
-  if (!polylines[r] || arcLen(coords) > arcLen(polylines[r])) {
-    polylines[r] = coords;
-  }
+  (branchPolys[r] ||= []).push(coords);
 }
+for (const r of Object.keys(branchPolys)) {
+  branchPolys[r].sort((a, b) => arcLen(b) - arcLen(a)); // primary (longest) first
+}
+
+// Planar point→polyline distance (deg, equirectangular) for station assignment.
+const distToPoly = (lon, lat, coords) => {
+  const px = lon * COS_LAT, py = lat;
+  let best = Infinity;
+  for (let i = 1; i < coords.length; i++) {
+    const ax = coords[i - 1][0] * COS_LAT, ay = coords[i - 1][1];
+    const bx = coords[i][0] * COS_LAT, by = coords[i][1];
+    const dx = bx - ax, dy = by - ay;
+    const seg2 = dx * dx + dy * dy;
+    const t = seg2 <= 1e-18 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / seg2));
+    const cx = ax + t * dx, cy = ay + t * dy;
+    best = Math.min(best, Math.hypot(px - cx, py - cy));
+  }
+  return best;
+};
+const NEAR = 0.0015; // ~120m: a station is "on" a branch if within this
 
 // --- stations: eval the non-module ctaData.js to get the array ---
 const src = fs.readFileSync(dataPath, "utf8");
@@ -71,21 +90,26 @@ for (const s of ctaStops) {
   }
 }
 
-const out = {};
-for (const route of Object.keys(polylines)) {
-  out[route] = {
-    polyline: polylines[route].map(([lon, lat]) => [+lon.toFixed(5), +lat.toFixed(5)]),
-    stations: [...(stations[route]?.values() || [])].map((s) => ({
-      name: s.name,
-      lat: +s.lat.toFixed(5),
-      lon: +s.lon.toFixed(5),
-    })),
-  };
+const round = (s) => ({ name: s.name, lat: +s.lat.toFixed(5), lon: +s.lon.toFixed(5) });
+
+const out = {}; // route -> [ {polyline, stations}, ... ] (branches)
+for (const route of Object.keys(branchPolys)) {
+  const polys = branchPolys[route];
+  const stns = [...(stations[route]?.values() || [])];
+  out[route] = polys.map((coords) => {
+    // Single-branch routes take all stations; branched routes assign by proximity.
+    const onBranch = polys.length === 1 ? stns : stns.filter((s) => distToPoly(s.lon, s.lat, coords) <= NEAR);
+    return {
+      polyline: coords.map(([lon, lat]) => [+lon.toFixed(5), +lat.toFixed(5)]),
+      stations: onBranch.map(round),
+    };
+  });
 }
 
 const dest = path.resolve(process.cwd(), "src/track.json");
 fs.writeFileSync(dest, JSON.stringify(out));
 for (const r of Object.keys(out)) {
-  console.log(`${r.padEnd(5)} polyline=${out[r].polyline.length}  stations=${out[r].stations.length}`);
+  const b = out[r].map((br) => `${br.polyline.length}/${br.stations.length}st`).join("  ");
+  console.log(`${r.padEnd(5)} ${out[r].length} branch(es): ${b}`);
 }
 console.log(`wrote ${dest} (${fs.statSync(dest).size} bytes)`);

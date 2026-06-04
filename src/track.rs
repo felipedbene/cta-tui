@@ -44,6 +44,7 @@ pub struct TrackStation {
 pub struct Proj {
     pub pos01: f64,
     pub seg: (f64, f64),
+    pub dist2: f64, // squared planar distance to the rail (for branch assignment)
 }
 
 pub struct RouteTrack {
@@ -58,12 +59,13 @@ pub struct RouteTrack {
 pub struct StationRef {
     pub name: String,
     pub route: String,
-    pub index: usize, // position in that route's ordered station list
+    pub branch: usize, // which branch of the route
+    pub index: usize,  // position in that branch's ordered station list
 }
 
 pub struct TrackMap {
-    routes: HashMap<String, RouteTrack>,
-    index: Vec<StationRef>, // flat, for fuzzy search
+    routes: HashMap<String, Vec<RouteTrack>>, // one or more branches per route
+    index: Vec<StationRef>,                   // flat, for fuzzy search
 }
 
 fn planar(lon: f64, lat: f64) -> (f64, f64) {
@@ -128,6 +130,7 @@ impl RouteTrack {
         Some(Proj {
             pos01: (best_along / self.total).clamp(0.0, 1.0),
             seg: best_seg,
+            dist2: best_d2,
         })
     }
 
@@ -165,30 +168,40 @@ impl RouteTrack {
 impl TrackMap {
     /// Parse the baked asset. Panics on a malformed embed — it ships with the binary.
     pub fn load() -> Self {
-        let raw: HashMap<String, RawTrack> =
+        let raw: HashMap<String, Vec<RawTrack>> =
             serde_json::from_str(TRACK_JSON).expect("track.json is a valid baked asset");
-        let routes: HashMap<String, RouteTrack> =
-            raw.into_iter().map(|(k, v)| (k, RouteTrack::build(v))).collect();
+        let routes: HashMap<String, Vec<RouteTrack>> = raw
+            .into_iter()
+            .map(|(k, brs)| (k, brs.into_iter().map(RouteTrack::build).collect()))
+            .collect();
 
-        // Flat, searchable index of every station on every line (sorted by route
-        // for stable ordering across runs).
+        // Flat, searchable index of every station (sorted by route for stability).
+        // A station name shared by branches (the trunk) is indexed once, on the
+        // first branch that has it, so search shows it a single time per line.
         let mut keys: Vec<&String> = routes.keys().collect();
         keys.sort();
         let mut index = Vec::new();
         for k in keys {
-            for (i, s) in routes[k].stations.iter().enumerate() {
-                index.push(StationRef {
-                    name: s.name.clone(),
-                    route: k.clone(),
-                    index: i,
-                });
+            let mut seen = std::collections::HashSet::new();
+            for (b, branch) in routes[k].iter().enumerate() {
+                for (i, s) in branch.stations.iter().enumerate() {
+                    if seen.insert(s.name.to_lowercase()) {
+                        index.push(StationRef {
+                            name: s.name.clone(),
+                            route: k.clone(),
+                            branch: b,
+                            index: i,
+                        });
+                    }
+                }
             }
         }
         TrackMap { routes, index }
     }
 
-    pub fn route(&self, key: &str) -> Option<&RouteTrack> {
-        self.routes.get(&key.to_lowercase())
+    /// All branches of a route (primary first).
+    pub fn branches(&self, key: &str) -> &[RouteTrack] {
+        self.routes.get(&key.to_lowercase()).map_or(&[], |b| b.as_slice())
     }
 
     pub fn station_index(&self) -> &[StationRef] {

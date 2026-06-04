@@ -15,7 +15,8 @@ pub struct Search {
 /// A station the map is zoomed in on.
 pub struct Zoom {
     pub route: String,
-    pub index: usize, // station index within that route
+    pub branch: usize,
+    pub index: usize, // station index within that branch
 }
 
 pub struct App {
@@ -257,7 +258,7 @@ impl App {
             self.focused = pos;
             self.selected = 0;
         }
-        self.zoom = Some(Zoom { route: st.route, index: st.index });
+        self.zoom = Some(Zoom { route: st.route, branch: st.branch, index: st.index });
         self.close_search();
     }
 
