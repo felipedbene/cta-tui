@@ -9,6 +9,7 @@
 
 mod app;
 mod cta;
+mod notify;
 mod track;
 mod ui;
 
@@ -57,6 +58,11 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(6);
+    // Desktop delay notifications: on unless CTA_NOTIFY is 0/false/off.
+    let notify_enabled = !matches!(
+        std::env::var("CTA_NOTIFY").unwrap_or_default().to_lowercase().as_str(),
+        "0" | "false" | "off"
+    );
 
     // Headless probe: one snapshot to stdout, no terminal. `CTA_PROBE=1 cargo run`.
     if std::env::var("CTA_PROBE").is_ok() {
@@ -88,7 +94,7 @@ async fn main() -> Result<()> {
         let cta = Cta::new(key);
         let refs: Vec<&str> = routes.iter().map(String::as_str).collect();
         let snap = cta.snapshot(&refs, &home_mapid).await;
-        let mut app = App::new(home_name, alert_min);
+        let mut app = App::new(home_name, alert_min, false); // no notifications in probe
         app.apply(snap);
         // Drive search/zoom for off-screen visual checks.
         if let Ok(q) = std::env::var("CTA_SEARCH") {
@@ -145,7 +151,7 @@ async fn main() -> Result<()> {
     execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    let res = run(&mut terminal, &mut rx, refresh_tx, home_name, alert_min).await;
+    let res = run(&mut terminal, &mut rx, refresh_tx, home_name, alert_min, notify_enabled).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -159,8 +165,9 @@ async fn run<B: ratatui::backend::Backend>(
     refresh_tx: mpsc::Sender<()>,
     home_name: String,
     alert_min: i64,
+    notify_enabled: bool,
 ) -> Result<()> {
-    let mut app = App::new(home_name, alert_min);
+    let mut app = App::new(home_name, alert_min, notify_enabled);
     let mut events = EventStream::new();
     // ~4 fps render tick so the radar sweep + APP/DLY blink stay alive between polls.
     let mut frame = tokio::time::interval(Duration::from_millis(250));
@@ -178,6 +185,17 @@ async fn run<B: ratatui::backend::Backend>(
                     let mut out = std::io::stdout();
                     let _ = out.write_all(b"\x07"); // terminal bell on a fresh approach
                     let _ = out.flush();
+                }
+                let notes = app.take_notes();
+                if !notes.is_empty() {
+                    // One notification per poll; cap the body so a meltdown can't spam it.
+                    let shown: Vec<&str> = notes.iter().take(4).map(String::as_str).collect();
+                    let extra = notes.len().saturating_sub(shown.len());
+                    let mut body = shown.join("\n");
+                    if extra > 0 {
+                        body.push_str(&format!("\n(+{extra} more)"));
+                    }
+                    notify::send("CTA Track Grid — Delays", &body);
                 }
             }
             Some(Ok(ev)) = events.next() => {

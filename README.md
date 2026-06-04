@@ -36,6 +36,7 @@ CTA_KEY=your_key_here cargo run --release
 | `CTA_HOME_NAME`  | `Kedzie`                         | label for the home panel        |
 | `CTA_REFRESH`    | `30`                             | seconds between polls           |
 | `CTA_ALERT_MIN`  | `6`                              | bell + flash when a home train is ≤ this many min away (`0` disables) |
+| `CTA_NOTIFY`     | `1`                              | desktop notification when a tracked train goes delayed (`0` disables) |
 
 ## Debug modes (no terminal needed)
 
@@ -104,7 +105,8 @@ normalizes that everywhere.
 - **fio 3** — ✅ done: home-station approach notifier (bell + flashing arrivals
   panel when a train is within `CTA_ALERT_MIN`).
 - **fio 4** — ✅ done: ASCII track map (see above).
-- **fio 5** — desktop notification on delay, via `notify-rust`.
+- **fio 5** — ✅ done: desktop notification on delay. Shells out to the platform
+  notifier (`osascript` / `notify-send`) — no extra crate. `CTA_NOTIFY=0` off.
 - per-branch track maps for the Green/branched lines (show both south termini).
 - optional vertical track orientation for tall/narrow terminals.
 

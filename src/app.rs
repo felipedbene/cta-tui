@@ -35,10 +35,15 @@ pub struct App {
     started: bool,                // suppress an alert storm on the first poll
     pub flash: u8,                // frames remaining to flash the arrivals panel
     pending_bell: bool,           // a new approach to ring once, consumed by main
+    // fio 5 — desktop notification on delay.
+    notify_enabled: bool,
+    delayed_seen: HashSet<String>, // runs currently flagged delayed (already notified)
+    started_delay: bool,           // suppress a notification storm on the first poll
+    pending_notes: Vec<String>,    // newly-delayed lines, drained by main
 }
 
 impl App {
-    pub fn new(home_label: String, alert_min: i64) -> Self {
+    pub fn new(home_label: String, alert_min: i64, notify_enabled: bool) -> Self {
         Self {
             snap: Snapshot::default(),
             focused: 0,
@@ -55,6 +60,10 @@ impl App {
             started: false,
             flash: 0,
             pending_bell: false,
+            notify_enabled,
+            delayed_seen: HashSet::new(),
+            started_delay: false,
+            pending_notes: Vec::new(),
         }
     }
 
@@ -66,6 +75,36 @@ impl App {
     /// Consume a queued bell (rung once when a train newly comes within range).
     pub fn take_bell(&mut self) -> bool {
         std::mem::take(&mut self.pending_bell)
+    }
+
+    /// Drain newly-delayed descriptions for the main loop to push as notifications.
+    pub fn take_notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_notes)
+    }
+
+    /// After a new snapshot, queue a desktop notification for any tracked train
+    /// that has newly gone delayed. Dedupes by run; one delay episode per run.
+    fn check_delays(&mut self) {
+        if !self.notify_enabled {
+            return;
+        }
+        let mut current = HashSet::new();
+        let mut fresh = Vec::new();
+        for b in &self.snap.boards {
+            for t in &b.trains {
+                if t.delayed && !t.run.is_empty() {
+                    current.insert(t.run.clone());
+                    if self.started_delay && !self.delayed_seen.contains(&t.run) {
+                        fresh.push(format!("{} #{} → {}", b.label, t.run, t.dest));
+                    }
+                }
+            }
+        }
+        if !fresh.is_empty() {
+            self.pending_notes = fresh;
+        }
+        self.delayed_seen = current;
+        self.started_delay = true;
     }
 
     /// After a new snapshot, fire the approach alert when a home-station train
@@ -109,6 +148,7 @@ impl App {
             self.selected = len.saturating_sub(1);
         }
         self.check_approach();
+        self.check_delays();
     }
 
     pub fn next_route(&mut self) {
@@ -339,7 +379,7 @@ mod tests {
 
     #[test]
     fn approach_alert_lifecycle() {
-        let mut app = App::new("Home".into(), 6);
+        let mut app = App::new("Home".into(), 6, false);
 
         // First poll already has a near train: seed silently, no bell storm.
         app.apply(snap_with(vec![arr("100", 4)]));
@@ -366,9 +406,62 @@ mod tests {
 
     #[test]
     fn alert_disabled_when_zero() {
-        let mut app = App::new("Home".into(), 0);
+        let mut app = App::new("Home".into(), 0, false);
         app.apply(snap_with(vec![arr("100", 9)]));
         app.apply(snap_with(vec![arr("100", 1)]));
         assert!(!app.take_bell());
+    }
+
+    fn board_with(trains: Vec<crate::cta::Train>) -> Snapshot {
+        Snapshot {
+            boards: vec![crate::cta::RouteBoard {
+                key: "g".into(),
+                label: "Green".into(),
+                trains,
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn train(run: &str, delayed: bool) -> crate::cta::Train {
+        crate::cta::Train {
+            run: run.into(),
+            dest: "Loop".into(),
+            next_station: "X".into(),
+            eta_min: Some(5),
+            approaching: false,
+            delayed,
+            dir: None,
+            heading: None,
+            lat: None,
+            lon: None,
+        }
+    }
+
+    #[test]
+    fn delay_notifies_once_per_episode() {
+        let mut app = App::new("Home".into(), 0, true);
+
+        // First poll, train already delayed → seed silently.
+        app.apply(board_with(vec![train("100", true)]));
+        assert!(app.take_notes().is_empty());
+
+        // Still delayed → no repeat.
+        app.apply(board_with(vec![train("100", true)]));
+        assert!(app.take_notes().is_empty());
+
+        // A different train newly delayed → notify.
+        app.apply(board_with(vec![train("100", true), train("200", true)]));
+        let notes = app.take_notes();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("#200"));
+
+        // 100 recovers then re-delays → notifies again (new episode).
+        app.apply(board_with(vec![train("100", false), train("200", true)]));
+        assert!(app.take_notes().is_empty());
+        app.apply(board_with(vec![train("100", true), train("200", true)]));
+        let notes = app.take_notes();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("#100"));
     }
 }
