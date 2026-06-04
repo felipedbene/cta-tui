@@ -1,7 +1,22 @@
 # CTA Track Grid — TUI
 
-NORAD-style Chicago 'L' board in the terminal. Native Rust + [ratatui].
+NORAD-style Chicago 'L' board in the terminal. Native Rust + [ratatui].  
 No Worker proxy needed (native app => no CORS); the API key lives in an env var.
+
+![CTA TUI screenshot showing Green Line trains and service alerts](screenshot.png)
+
+## Features
+
+- **Real-time train positions** for all 8 CTA 'L' lines (Red, Blue, Brown, Green, Orange, Purple, Pink, Yellow)
+- **ASCII track map** with live trains projected onto their line, showing direction and approaching status
+- **Per-branch maps** for Green Line (both Ashland/63rd and Cottage Grove termini shown stacked)
+- **Home station arrivals panel** with live ETAs and terminal destinations
+- **Service alerts overlay** (`a` key) — shows active Customer Alerts for the focused line
+- **Approach notifier** — bell + flashing panel when a train is ≤ 6 minutes from your home station
+- **Desktop notifications** when a tracked train goes delayed (via native OS notifier)
+- **Fuzzy station search** (`/` key) — jump to any station across all 8 lines
+- **Vertical/horizontal orientation** (`v` key) — switch between track strip and column view
+- **NORAD aesthetics** — classification banner, rotating radar sweep `◜◝◞◟`, live clock, blinking status flags
 
 ```
 ╔ ◜ CTA TRACK GRID NORAD COMMAND  TRACKING ═══════════════════ UNCLASS  UPD 14:32:07 ╗
@@ -9,11 +24,11 @@ No Worker proxy needed (native app => no CORS); the API key lives in an env var.
 ║│ ● RED   Normal Ser…  │┃ ↓ #002  1m     → 35th… ▸ Ashland/63rd  ┃│  1m ● Harlem/Lake │║
 ║│ ● GRN   Normal Ser…  │┃ → #003  1m APP → California ▸ Cottage…  ┃│  8m ● Ashland/63rd│║
 ║│ ● BLUE  Delays       │┃ ← #008 DUE APP → Clark/Lake ▸ Harlem…  ┃│ 22m ● Harlem/Lake │║
-║└──────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛└──────────────────┘║
+║└──────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛└──────────────────┘║
 ╚ q  QUIT   r  RESCAN   ←/→  LINE   ↑/↓  SCROLL ═════════════ 87 TRAINS // 8 LINES TRACKED ╝
 ```
 
-A double-ruled console: classification banner + rotating radar sweep `◜◝◞◟` and a
+A double-ruled console: classification banner + rotating radar sweep and a
 live clock in the top rule, the key legend + train/line counter in the bottom rule.
 The focused line gets a heavy brand-colored frame; APP/DLY flags and any non-normal
 system status blink like real annunciators (driven by a 4 fps render tick).
@@ -101,14 +116,14 @@ CTA_RENDER=1 CTA_KEY=… cargo run    # draw one frame off-screen and print as t
 ## Layout
 
 - **left** — system board: the 8 'L' lines + live status (keyless `routes.aspx`).
-- **center** — focused line. A **track map** strip on top (fio 4, below) and the
+- **center** — focused line. A **track map** strip on top and the
   train list under it: heading arrow, run #, ETA, DLY (amber) / APP (green)
   flags, next stop, terminal dest. `←/→` cycles lines; `↑/↓` moves the train
   cursor — the selected train is highlighted in the list and on the map, and
   its run # shows in the panel title.
 - **right** — home-station arrivals ticker (`ttarrivals.aspx`).
 
-## Track map (fio 4) — `src/track.rs` + `scripts/build_track.mjs`
+## Track map — `src/track.rs` + `scripts/build_track.mjs`
 
 The center strip is a NORAD-style line diagram: a rail of evenly-spaced station
 ticks `┿`, `◆` termini, the home station starred `★` and labeled, and every live
@@ -156,17 +171,8 @@ Three feeds folded into one `Snapshot` per poll:
 CTA JSON collapses single-element arrays into bare objects; `OneOrMany<T>`
 normalizes that everywhere.
 
-## Roadmap (next fios)
+---
 
-- **fio 2** — ✅ done: alerts overlay. `a` shows active Customer Alerts
-  (`alerts.aspx`) for the focused line — `⚠N` badge in the title; uses the
-  plain ShortDescription, skipping the CDATA FullDescription.
-- **fio 3** — ✅ done: home-station approach notifier (bell + flashing arrivals
-  panel when a train is within `CTA_ALERT_MIN`).
-- **fio 4** — ✅ done: ASCII track map (see above).
-- **fio 5** — ✅ done: desktop notification on delay. Shells out to the platform
-  notifier (`osascript` / `notify-send`) — no extra crate. `CTA_NOTIFY=0` off.
-- ✅ done: per-branch track maps for Green (both south termini shown stacked).
-- ✅ done: vertical track orientation (`v`).
+Built with [ratatui]. Blog post: [The Train Tracker I Built Because I'm That Guy](https://debene.dev/posts/cta-tracker-chicago-trains/)
 
 [ratatui]: https://ratatui.rs
