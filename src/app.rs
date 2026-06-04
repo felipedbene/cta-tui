@@ -31,6 +31,7 @@ pub struct App {
     pub search: Option<Search>,
     pub zoom: Option<Zoom>,
     pub show_alerts: bool,
+    pub vertical: bool, // vertical track orientation
     // fio 3 — home-station approach notifier.
     pub alert_min: i64,           // threshold in minutes (0 disables)
     alerted: HashSet<String>,     // runs we've already alerted at the home station
@@ -58,6 +59,7 @@ impl App {
             search: None,
             zoom: None,
             show_alerts: false,
+            vertical: false,
             alert_min,
             alerted: HashSet::new(),
             started: false,
@@ -268,6 +270,10 @@ impl App {
 
     pub fn toggle_alerts(&mut self) {
         self.show_alerts = !self.show_alerts;
+    }
+
+    pub fn toggle_vertical(&mut self) {
+        self.vertical = !self.vertical;
     }
 
     /// Active alerts impacting the given route key.

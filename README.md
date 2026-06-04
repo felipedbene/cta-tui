@@ -83,7 +83,9 @@ label that would collide), so the line is navigable between its termini.
 Press `/` to **fuzzy-find** any station across all 8 lines; selecting one jumps
 to that line and **zooms** the map to a ~9-station window centered on it, with
 every station labeled and trains in-window placed (`«`/`»` count the rest).
-Press `a` for the focused line's active **service alerts**.
+Press `a` for the focused line's active **service alerts**, or `v` to flip the
+track to a **vertical** orientation (line top→bottom, one station per row with
+full names and trains as `▲`/`▼` markers — good for tall/narrow terminals).
 
 Branched lines (Green) ship as overlapping geojson features sharing a trunk.
 The build script keeps each as a branch and assigns stations by proximity, so
@@ -113,6 +115,6 @@ normalizes that everywhere.
 - **fio 5** — ✅ done: desktop notification on delay. Shells out to the platform
   notifier (`osascript` / `notify-send`) — no extra crate. `CTA_NOTIFY=0` off.
 - ✅ done: per-branch track maps for Green (both south termini shown stacked).
-- optional vertical track orientation for tall/narrow terminals.
+- ✅ done: vertical track orientation (`v`).
 
 [ratatui]: https://ratatui.rs

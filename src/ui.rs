@@ -104,7 +104,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     .right_aligned();
 
     let mut legend_spans = Vec::new();
-    for (k, label) in [("/", "FIND"), ("a", "ALERTS"), ("q", "QUIT"), ("r", "RESCAN"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
+    for (k, label) in [("/", "FIND"), ("a", "ALERTS"), ("v", "VERT"), ("q", "QUIT"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
         legend_spans.extend(key(k, label));
     }
     let legend = Line::from(legend_spans);
@@ -436,6 +436,14 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // Vertical orientation: a full-height line diagram replaces the map+list.
+    if app.vertical {
+        if let Some(rt) = branches.first() {
+            draw_track_vertical(f, inner, app, rt, &branch_trains(app, branches, 0), color, blink_on);
+        }
+        return;
+    }
+
     // A branched line (Green) shows both branches stacked when there's room;
     // otherwise a single strip. The map sits above the train list.
     let branched_room = branches.len() > 1 && inner.height >= 16 && zoom.is_none();
@@ -732,6 +740,88 @@ fn draw_track_zoom(f: &mut Frame, area: Rect, rt: &crate::track::RouteTrack, tra
         lab_b.into_line(),
     ];
     f.render_widget(Paragraph::new(rows), area);
+}
+
+/// Vertical orientation: the line runs top→bottom, one station per row, with a
+/// rail gutter and each train shown (▲/▼ + run) next to its nearest station.
+/// Suits tall/narrow terminals and shows full station names. Scrolls to keep
+/// the selected train in view. Uses the primary branch.
+fn draw_track_vertical(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::RouteTrack, trains: &[&crate::cta::Train], color: Color, blink_on: bool) {
+    let n = rt.stations.len();
+    let h = area.height as usize;
+    if n == 0 || h == 0 {
+        return;
+    }
+    let home = app.home_label.to_lowercase();
+    let sel_run = app.selected_run();
+
+    // Bucket each train onto its nearest station; remember the selected one's row.
+    let mut at: Vec<Vec<Span>> = vec![Vec::new(); n];
+    let mut sel_station: Option<usize> = None;
+    for &t in trains {
+        let (Some(lat), Some(lon)) = (t.lat, t.lon) else { continue };
+        let Some(pj) = rt.project(lat, lon) else { continue };
+        let i = (rt.pos_to_index(pj.pos01).round() as usize).min(n - 1);
+        let forward = match t.heading {
+            Some(d) => {
+                let r = (d as f64).to_radians();
+                r.sin() * pj.seg.0 + r.cos() * pj.seg.1 >= 0.0
+            }
+            None => t.dir.as_deref() != Some("5"),
+        };
+        let sel = !t.run.is_empty() && Some(t.run.as_str()) == sel_run;
+        if sel {
+            sel_station = Some(i);
+        }
+        let style = if sel {
+            Style::default().fg(Color::Black).bg(PHOS).add_modifier(Modifier::BOLD)
+        } else if t.delayed {
+            if !blink_on {
+                continue;
+            }
+            Style::default().fg(AMBER).add_modifier(Modifier::BOLD)
+        } else if t.approaching {
+            Style::default().fg(PHOS).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(color).add_modifier(Modifier::BOLD)
+        };
+        at[i].push(Span::styled(
+            format!(" {}#{}", if forward { '▼' } else { '▲' }, t.run),
+            style,
+        ));
+    }
+
+    // Scroll so the selected train's station stays visible.
+    let max_scroll = n.saturating_sub(h);
+    let scroll = sel_station
+        .map(|s| if s >= h { s - h + 1 } else { 0 })
+        .unwrap_or(0)
+        .min(max_scroll);
+
+    // Reserve room after the name for at least one train marker (" ▼#1234").
+    let name_w = (area.width as usize).saturating_sub(11).clamp(6, 20);
+    let mut lines: Vec<Line> = Vec::new();
+    for i in scroll..(scroll + h).min(n) {
+        let s = &rt.stations[i];
+        let name = s.name.to_lowercase();
+        let is_home = !home.is_empty() && (name == home || name.contains(&home));
+        let (glyph, gstyle, nstyle) = if is_home {
+            ('★', Style::default().fg(AMBER).add_modifier(Modifier::BOLD), Style::default().fg(AMBER).add_modifier(Modifier::BOLD))
+        } else if i == 0 || i == n - 1 {
+            ('◆', Style::default().fg(color).add_modifier(Modifier::BOLD), Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+        } else if is_landmark(&s.name) {
+            ('◈', Style::default().fg(color).add_modifier(Modifier::BOLD), Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+        } else {
+            ('┿', Style::default().fg(color), Style::default().fg(Color::White))
+        };
+        let mut spans = vec![
+            Span::styled(format!(" {glyph} "), gstyle),
+            Span::styled(format!("{:<width$}", trunc(&s.name, name_w), width = name_w), nstyle),
+        ];
+        spans.extend(at[i].iter().cloned());
+        lines.push(Line::from(spans));
+    }
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 fn draw_train_list(f: &mut Frame, area: Rect, trains: &[crate::cta::Train], selected: usize, color: Color, blink_on: bool) {

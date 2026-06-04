@@ -108,6 +108,9 @@ async fn main() -> Result<()> {
         if std::env::var("CTA_ALERTS").is_ok() {
             app.show_alerts = true;
         }
+        if std::env::var("CTA_VERT").is_ok() {
+            app.vertical = true;
+        }
         let w: u16 = std::env::var("CTA_COLS").ok().and_then(|v| v.parse().ok()).unwrap_or(110);
         let h: u16 = std::env::var("CTA_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(26);
         let backend = ratatui::backend::TestBackend::new(w, h);
@@ -225,6 +228,7 @@ async fn run<B: ratatui::backend::Backend>(
                                 }
                                 KeyCode::Char('/') => app.open_search(),
                                 KeyCode::Char('a') => app.toggle_alerts(),
+                                KeyCode::Char('v') => app.toggle_vertical(),
                                 KeyCode::Char('r') => { let _ = refresh_tx.try_send(()); app.loading = true; }
                                 KeyCode::Right | KeyCode::Tab => { app.clear_zoom(); app.next_route(); }
                                 KeyCode::Left  => { app.clear_zoom(); app.prev_route(); }
