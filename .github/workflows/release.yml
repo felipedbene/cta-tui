@@ -1,7 +1,7 @@
 name: release
 
-# Build self-contained single binaries on each platform's native runner and
-# attach them to a GitHub Release. Triggered by pushing a version tag.
+# Build self-contained single binaries on native runners and attach them to a
+# GitHub Release. Triggered by pushing a version tag.
 on:
   push:
     tags: ["v*"]
@@ -11,15 +11,32 @@ permissions:
   contents: write
 
 jobs:
+  # A pushed tag doesn't create a Release on its own, and the upload action
+  # needs one to exist — so make it here (idempotent across re-runs/re-tags).
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create release if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                 --title "$GITHUB_REF_NAME" --generate-notes
+
   build:
     name: ${{ matrix.target }}
+    needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Both macOS arches build on Apple Silicon runners — the Apple
+          # toolchain cross-links x86_64 natively, so no Intel runner needed.
           - { target: aarch64-apple-darwin,        os: macos-14 }
-          - { target: x86_64-apple-darwin,         os: macos-13 }
+          - { target: x86_64-apple-darwin,         os: macos-14 }
           - { target: x86_64-unknown-linux-musl,   os: ubuntu-latest }
           - { target: aarch64-unknown-linux-musl,  os: ubuntu-latest }
           - { target: x86_64-pc-windows-msvc,      os: windows-latest }
@@ -29,9 +46,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      # taiki-e's action builds, strips, tars (zip on Windows), checksums, and
-      # uploads to the release. It uses `cross` automatically for targets that
-      # need it (the musl/aarch64 ones), so rustls/ring cross-compile cleanly.
+      # Builds, strips, tars (zip on Windows), checksums, and uploads to the
+      # release. Uses `cross` automatically for targets that need it (musl), so
+      # rustls/ring cross-compile cleanly.
       - name: Build & upload
         uses: taiki-e/upload-rust-binary-action@v1
         with:
