@@ -35,6 +35,7 @@ CTA_KEY=your_key_here cargo run --release
 | `CTA_HOME_MAPID` | `41070`                          | home station (Kedzie/Green)     |
 | `CTA_HOME_NAME`  | `Kedzie`                         | label for the home panel        |
 | `CTA_REFRESH`    | `30`                             | seconds between polls           |
+| `CTA_ALERT_MIN`  | `6`                              | bell + flash when a home train is ≤ this many min away (`0` disables) |
 
 ## Debug modes (no terminal needed)
 
@@ -100,7 +101,8 @@ normalizes that everywhere.
 ## Roadmap (next fios)
 
 - **fio 2** — Green Line alerts panel (`alerts.aspx?routeid=g`, has CDATA noise).
-- **fio 3** — Kedzie approach notifier: bell + flash when a Green train ≤6 min.
+- **fio 3** — ✅ done: home-station approach notifier (bell + flashing arrivals
+  panel when a train is within `CTA_ALERT_MIN`).
 - **fio 4** — ✅ done: ASCII track map (see above).
 - **fio 5** — desktop notification on delay, via `notify-rust`.
 - per-branch track maps for the Green/branched lines (show both south termini).

@@ -3,6 +3,7 @@
 use crate::cta::Snapshot;
 use crate::track::TrackMap;
 use ratatui::style::Color;
+use std::collections::HashSet;
 
 /// Active station fuzzy-search overlay.
 pub struct Search {
@@ -28,10 +29,16 @@ pub struct App {
     pub track: TrackMap,
     pub search: Option<Search>,
     pub zoom: Option<Zoom>,
+    // fio 3 — home-station approach notifier.
+    pub alert_min: i64,           // threshold in minutes (0 disables)
+    alerted: HashSet<String>,     // runs we've already alerted at the home station
+    started: bool,                // suppress an alert storm on the first poll
+    pub flash: u8,                // frames remaining to flash the arrivals panel
+    pending_bell: bool,           // a new approach to ring once, consumed by main
 }
 
 impl App {
-    pub fn new(home_label: String) -> Self {
+    pub fn new(home_label: String, alert_min: i64) -> Self {
         Self {
             snap: Snapshot::default(),
             focused: 0,
@@ -43,11 +50,47 @@ impl App {
             track: TrackMap::load(),
             search: None,
             zoom: None,
+            alert_min,
+            alerted: HashSet::new(),
+            started: false,
+            flash: 0,
+            pending_bell: false,
         }
     }
 
     pub fn tick(&mut self) {
         self.frame = self.frame.wrapping_add(1);
+        self.flash = self.flash.saturating_sub(1);
+    }
+
+    /// Consume a queued bell (rung once when a train newly comes within range).
+    pub fn take_bell(&mut self) -> bool {
+        std::mem::take(&mut self.pending_bell)
+    }
+
+    /// After a new snapshot, fire the approach alert when a home-station train
+    /// newly enters the threshold. Dedupes by run so each train rings once.
+    fn check_approach(&mut self) {
+        if self.alert_min <= 0 {
+            return;
+        }
+        let near: HashSet<String> = self
+            .snap
+            .arrivals
+            .iter()
+            .filter(|a| a.eta_min.map_or(false, |m| m <= self.alert_min))
+            .map(|a| a.run.clone())
+            .filter(|r| !r.is_empty())
+            .collect();
+        // A train that wasn't near last poll but is now → alert (but not on the
+        // very first poll, which would ring for everything already in range).
+        let fresh = self.started && near.difference(&self.alerted).next().is_some();
+        if fresh {
+            self.pending_bell = true;
+            self.flash = 8; // ~2s at 4 fps
+        }
+        self.alerted = near;
+        self.started = true;
     }
 
     /// Number of trains on the focused line.
@@ -65,6 +108,7 @@ impl App {
         if self.selected >= len {
             self.selected = len.saturating_sub(1);
         }
+        self.check_approach();
     }
 
     pub fn next_route(&mut self) {
@@ -270,4 +314,61 @@ pub fn heading_arrow(deg: Option<u16>) -> char {
     let arrows = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];
     let idx = (((d as f32 + 22.5) / 45.0) as usize) % 8;
     arrows[idx]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cta::Arrival;
+
+    fn arr(run: &str, eta: i64) -> Arrival {
+        Arrival {
+            station: "Home".into(),
+            run: run.into(),
+            route: "G".into(),
+            dest: "Loop".into(),
+            eta_min: Some(eta),
+            approaching: false,
+            delayed: false,
+        }
+    }
+
+    fn snap_with(arrivals: Vec<Arrival>) -> Snapshot {
+        Snapshot { arrivals, ..Default::default() }
+    }
+
+    #[test]
+    fn approach_alert_lifecycle() {
+        let mut app = App::new("Home".into(), 6);
+
+        // First poll already has a near train: seed silently, no bell storm.
+        app.apply(snap_with(vec![arr("100", 4)]));
+        assert!(!app.take_bell());
+        assert_eq!(app.flash, 0);
+
+        // Train far away: still no bell.
+        app.apply(snap_with(vec![arr("200", 9)]));
+        assert!(!app.take_bell());
+
+        // It crosses into the window → ring once and flash.
+        app.apply(snap_with(vec![arr("200", 5)]));
+        assert!(app.take_bell());
+        assert!(app.flash > 0);
+
+        // Still near next poll → no repeat bell.
+        app.apply(snap_with(vec![arr("200", 3)]));
+        assert!(!app.take_bell());
+
+        // A different train enters → ring again.
+        app.apply(snap_with(vec![arr("200", 2), arr("300", 5)]));
+        assert!(app.take_bell());
+    }
+
+    #[test]
+    fn alert_disabled_when_zero() {
+        let mut app = App::new("Home".into(), 0);
+        app.apply(snap_with(vec![arr("100", 9)]));
+        app.apply(snap_with(vec![arr("100", 1)]));
+        assert!(!app.take_bell());
+    }
 }

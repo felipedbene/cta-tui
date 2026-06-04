@@ -59,6 +59,7 @@ pub struct RouteBoard {
 pub struct Arrival {
     #[allow(dead_code)] // home station is implied by the panel title for now
     pub station: String,
+    pub run: String, // train run number, for de-duping approach alerts
     pub route: String,
     pub dest: String,
     pub eta_min: Option<i64>,
@@ -136,6 +137,7 @@ struct ArrCtatt {
 struct RawEta {
     #[serde(rename = "staNm")]
     sta_nm: Option<String>,
+    rn: Option<String>,
     rt: Option<String>,
     #[serde(rename = "destNm")]
     dest_nm: Option<String>,
@@ -279,6 +281,7 @@ impl Cta {
             .into_iter()
             .map(|e| Arrival {
                 station: e.sta_nm.unwrap_or_default(),
+                run: e.rn.unwrap_or_default(),
                 route: e.rt.unwrap_or_default(),
                 dest: e.dest_nm.unwrap_or_default(),
                 eta_min: eta_minutes(&e.arr_t),

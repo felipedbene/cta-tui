@@ -53,6 +53,10 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
+    let alert_min: i64 = std::env::var("CTA_ALERT_MIN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(6);
 
     // Headless probe: one snapshot to stdout, no terminal. `CTA_PROBE=1 cargo run`.
     if std::env::var("CTA_PROBE").is_ok() {
@@ -84,7 +88,7 @@ async fn main() -> Result<()> {
         let cta = Cta::new(key);
         let refs: Vec<&str> = routes.iter().map(String::as_str).collect();
         let snap = cta.snapshot(&refs, &home_mapid).await;
-        let mut app = App::new(home_name);
+        let mut app = App::new(home_name, alert_min);
         app.apply(snap);
         // Drive search/zoom for off-screen visual checks.
         if let Ok(q) = std::env::var("CTA_SEARCH") {
@@ -141,7 +145,7 @@ async fn main() -> Result<()> {
     execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    let res = run(&mut terminal, &mut rx, refresh_tx, home_name).await;
+    let res = run(&mut terminal, &mut rx, refresh_tx, home_name, alert_min).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -154,8 +158,9 @@ async fn run<B: ratatui::backend::Backend>(
     rx: &mut mpsc::Receiver<Msg>,
     refresh_tx: mpsc::Sender<()>,
     home_name: String,
+    alert_min: i64,
 ) -> Result<()> {
-    let mut app = App::new(home_name);
+    let mut app = App::new(home_name, alert_min);
     let mut events = EventStream::new();
     // ~4 fps render tick so the radar sweep + APP/DLY blink stay alive between polls.
     let mut frame = tokio::time::interval(Duration::from_millis(250));
@@ -168,6 +173,12 @@ async fn run<B: ratatui::backend::Backend>(
             }
             Some(Msg::Snap(snap)) = rx.recv() => {
                 app.apply(snap);
+                if app.take_bell() {
+                    use std::io::Write;
+                    let mut out = std::io::stdout();
+                    let _ = out.write_all(b"\x07"); // terminal bell on a fresh approach
+                    let _ = out.flush();
+                }
             }
             Some(Ok(ev)) = events.next() => {
                 if let Event::Key(k) = ev {

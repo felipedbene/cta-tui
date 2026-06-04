@@ -675,15 +675,27 @@ fn trains_of_key<'a>(app: &'a App, key: &str) -> &'a [crate::cta::Train] {
 }
 
 fn arrivals_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
-    let title = Line::from(vec![
+    // fio 3 — flash the panel when a train is freshly within the alert window.
+    let flashing = app.flash > 0;
+    let border = if flashing && blink_on {
+        Color::White
+    } else {
+        AMBER
+    };
+    let mut title = vec![
         Span::styled(" ★ ", Style::default().fg(AMBER)),
         Span::styled(
             format!("{} ", trunc(&app.home_label, 18).to_uppercase()),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         ),
-    ]);
+    ];
+    if flashing {
+        title.push(Span::styled(
+            if blink_on { "◀ APPROACH " } else { "           " },
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ));
+    }
+    let title = Line::from(title);
 
     let items: Vec<ListItem> = if app.snap.arrivals.is_empty() {
         vec![ListItem::new(Span::styled(
@@ -720,7 +732,7 @@ fn arrivals_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
             .collect()
     };
     f.render_widget(
-        List::new(items).block(panel_block(title, AMBER, false)),
+        List::new(items).block(panel_block(title, border, false)),
         area,
     );
 }
