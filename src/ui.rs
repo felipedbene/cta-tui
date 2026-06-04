@@ -29,20 +29,12 @@ const SWEEP: [char; 4] = ['◜', '◝', '◞', '◟'];
 /// transfer-count derived) because CTA reuses station names across physically
 /// separate stops (e.g. three different "Western"s).
 const LANDMARKS: &[&str] = &[
-    "clark/lake",
-    "state/lake",
-    "lake",
-    "washington/wabash",
-    "adams/wabash",
-    "roosevelt",
-    "jackson",
-    "washington",
-    "monroe",
+    "clark/lake", // the big Loop transfer hub (one Loop anchor is enough)
+    "jackson",    // Red/Blue subway transfer
+    "roosevelt",  // south downtown gateway (Red/Orange/Green)
     "fullerton",
     "belmont",
     "howard",
-    "clark/division",
-    "wilson",
 ];
 
 fn is_landmark(name: &str) -> bool {
@@ -479,7 +471,9 @@ fn draw_track_full(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::Rout
         );
     }
     for (i, s) in rt.stations.iter().enumerate() {
-        if i == 0 || i == n - 1 || !is_landmark(&s.name) {
+        let name = s.name.to_lowercase();
+        let is_home = !home.is_empty() && (name == home || name.contains(&home));
+        if i == 0 || i == n - 1 || is_home || !is_landmark(&s.name) {
             continue;
         }
         packer.place(xof_station(i), &trunc(&s.name, 13), Style::default().fg(Color::White));
