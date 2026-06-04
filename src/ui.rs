@@ -245,11 +245,13 @@ fn draw_track_map(f: &mut Frame, area: Rect, app: &App, key: &str, color: Color,
     // Rail: heavy line, station ticks, ◆ termini, ★ home. Priority keeps the
     // star/terminus from being clobbered when stations crowd the same column.
     let mut rail = RowBuf::new(w, '━', Style::default().fg(DIM));
+    let mut home_col: Option<usize> = None;
     for (i, s) in rt.stations.iter().enumerate() {
         let x = xof_station(i);
         let name = s.name.to_lowercase();
         if !home.is_empty() && (name == home || name.contains(&home)) {
             rail.put_prio(x, '★', Style::default().fg(AMBER).add_modifier(Modifier::BOLD), 3);
+            home_col = Some(x);
         } else if i == 0 || i == n - 1 {
             rail.put_prio(x, '◆', Style::default().fg(color).add_modifier(Modifier::BOLD), 2);
         } else {
@@ -257,13 +259,15 @@ fn draw_track_map(f: &mut Frame, area: Rect, app: &App, key: &str, color: Color,
         }
     }
 
-    // Trains: split by trip direction onto the two rails, projected by lat/lon.
+    // Trains projected by lat/lon. Direction along the strip comes from the
+    // compass heading dotted with the local rail tangent — rightward trains ride
+    // the upper rail (▸/▶), leftward the lower (◂/◀); filled = approaching.
     let mut up = RowBuf::new(w, ' ', Style::default());
     let mut dn = RowBuf::new(w, ' ', Style::default());
     for t in trains_of(app) {
         let (Some(lat), Some(lon)) = (t.lat, t.lon) else { continue };
-        let Some(p) = rt.project(lat, lon) else { continue };
-        let x = col(rt.pos_to_slot(p));
+        let Some(pj) = rt.project(lat, lon) else { continue };
+        let x = col(rt.pos_to_slot(pj.pos01));
         let (style, prio) = if t.delayed {
             if !blink_on {
                 continue; // blink off → leave the cell empty this frame
@@ -274,18 +278,45 @@ fn draw_track_map(f: &mut Frame, area: Rect, app: &App, key: &str, color: Color,
         } else {
             (Style::default().fg(color).add_modifier(Modifier::BOLD), 1)
         };
-        let glyph = heading_arrow(t.heading);
-        let row = if t.dir.as_deref() == Some("1") { &mut up } else { &mut dn };
+        let forward = match t.heading {
+            Some(h) => {
+                let r = (h as f64).to_radians();
+                // heading: 0°=N, 90°=E; planar x=east, y=north.
+                r.sin() * pj.seg.0 + r.cos() * pj.seg.1 >= 0.0
+            }
+            None => t.dir.as_deref() != Some("5"),
+        };
+        let glyph = match (forward, t.approaching) {
+            (true, true) => '▶',
+            (true, false) => '▸',
+            (false, true) => '◀',
+            (false, false) => '◂',
+        };
+        let row = if forward { &mut up } else { &mut dn };
         row.put_prio(x, glyph, style, prio);
     }
 
-    // Terminus labels under the rail.
+    // Label row: termini at the ends, home station name centered under its ★.
     let mut lab = RowBuf::new(w, ' ', Style::default().fg(DIM));
+    let mut left_end = 0usize; // first free column after the left terminus label
+    let mut right_start = w; // first column occupied by the right terminus label
     if let (Some(first), Some(last)) = (rt.stations.first(), rt.stations.last()) {
-        let half = w / 2 - 1;
-        lab.write_str(0, &trunc(&first.name, half), Style::default().fg(DIM));
-        let r = trunc(&last.name, half);
-        lab.write_str(w.saturating_sub(r.chars().count()), &r, Style::default().fg(DIM));
+        let third = w / 3;
+        let l = trunc(&first.name, third);
+        lab.write_str(0, &l, Style::default().fg(DIM));
+        left_end = l.chars().count();
+        let r = trunc(&last.name, third);
+        right_start = w.saturating_sub(r.chars().count());
+        lab.write_str(right_start, &r, Style::default().fg(DIM));
+    }
+    // Label home only if it sits clear of both terminus labels (1-col gap).
+    if let Some(hx) = home_col {
+        let label = trunc(&app.home_label.to_uppercase(), 14);
+        let len = label.chars().count();
+        let start = hx.saturating_sub(len / 2).min(w.saturating_sub(len));
+        if start > left_end && start + len < right_start.saturating_sub(1) {
+            lab.write_str(start, &label, Style::default().fg(AMBER).add_modifier(Modifier::BOLD));
+        }
     }
 
     let rows = vec![up.into_line(), rail.into_line(), dn.into_line(), lab.into_line()];

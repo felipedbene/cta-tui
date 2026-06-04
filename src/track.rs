@@ -38,6 +38,14 @@ pub struct TrackStation {
     pub pos01: f64,
 }
 
+/// Result of projecting a point onto the rail: fractional position plus the
+/// unit direction of the rail at that point (planar x,y), so callers can tell
+/// which way along the strip a train with a known compass heading is moving.
+pub struct Proj {
+    pub pos01: f64,
+    pub seg: (f64, f64),
+}
+
 pub struct RouteTrack {
     pts: Vec<(f64, f64)>, // planar (x, y)
     cum: Vec<f64>,        // cumulative arc length to each vertex
@@ -69,21 +77,22 @@ impl RouteTrack {
         let mut stations: Vec<TrackStation> = raw
             .stations
             .iter()
-            .filter_map(|s| rt.project(s.lat, s.lon).map(|pos01| TrackStation { name: s.name.clone(), pos01 }))
+            .filter_map(|s| rt.project(s.lat, s.lon).map(|p| TrackStation { name: s.name.clone(), pos01: p.pos01 }))
             .collect();
         stations.sort_by(|a, b| a.pos01.partial_cmp(&b.pos01).unwrap_or(std::cmp::Ordering::Equal));
         rt.stations = stations;
         rt
     }
 
-    /// Nearest point on the rail → fractional position 0..1, or None if empty.
-    pub fn project(&self, lat: f64, lon: f64) -> Option<f64> {
+    /// Nearest point on the rail → fractional position + local rail direction.
+    pub fn project(&self, lat: f64, lon: f64) -> Option<Proj> {
         if self.pts.len() < 2 {
             return None;
         }
         let (px, py) = planar(lon, lat);
         let mut best_d2 = f64::INFINITY;
         let mut best_along = 0.0;
+        let mut best_seg = (1.0, 0.0);
         for i in 1..self.pts.len() {
             let (ax, ay) = self.pts[i - 1];
             let (bx, by) = self.pts[i];
@@ -100,9 +109,17 @@ impl RouteTrack {
                 best_d2 = d2;
                 let seg_len = seg2.sqrt();
                 best_along = self.cum[i - 1] + t * seg_len;
+                best_seg = if seg_len > 1e-12 {
+                    (dx / seg_len, dy / seg_len)
+                } else {
+                    (1.0, 0.0)
+                };
             }
         }
-        Some((best_along / self.total).clamp(0.0, 1.0))
+        Some(Proj {
+            pos01: (best_along / self.total).clamp(0.0, 1.0),
+            seg: best_seg,
+        })
     }
 
     /// Map a raw along-line position (0..1) to *station space* (0..1), where

@@ -55,8 +55,10 @@ CTA_RENDER=1 CTA_KEY=… cargo run    # draw one frame off-screen and print as t
 ## Track map (fio 4) — `src/track.rs` + `scripts/build_track.mjs`
 
 The center strip is a NORAD-style line diagram: a rail of evenly-spaced station
-ticks `┿`, `◆` termini, the home station starred `★`, and every live train
-projected onto it (inbound above the rail, outbound below, by trip direction).
+ticks `┿`, `◆` termini, the home station starred `★` and labeled, and every live
+train projected onto it. Travel direction comes from the compass heading dotted
+with the local rail tangent: rightward trains ride the upper rail (`▸`/`▶`),
+leftward the lower (`◂`/`◀`); a filled arrowhead means approaching.
 
 Geometry is baked at build time by `scripts/build_track.mjs`, which reads the
 Worker repo's `public/lines.geojson` (per-route rail polyline) and
