@@ -11,7 +11,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
 
@@ -86,7 +86,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     .right_aligned();
 
     let mut legend_spans = Vec::new();
-    for (k, label) in [("q", "QUIT"), ("r", "RESCAN"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
+    for (k, label) in [("/", "FIND"), ("q", "QUIT"), ("r", "RESCAN"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
         legend_spans.extend(key(k, label));
     }
     let legend = Line::from(legend_spans);
@@ -128,6 +128,100 @@ pub fn draw(f: &mut Frame, app: &App) {
     system_board(f, body[0], app, blink_on);
     train_panel(f, body[1], app, blink_on);
     arrivals_panel(f, body[2], app, blink_on);
+
+    if app.search.is_some() {
+        search_overlay(f, inner, app, blink_on);
+    }
+}
+
+/// Centered fuzzy-finder popup over the body.
+fn search_overlay(f: &mut Frame, body: Rect, app: &App, blink_on: bool) {
+    let Some(s) = &app.search else { return };
+    // Clamp strictly to the body — never larger — so Clear can't index past the
+    // buffer on a tiny/zero-size terminal.
+    let w = 54.min(body.width.saturating_sub(2));
+    let h = 16.min(body.height.saturating_sub(2));
+    if w < 16 || h < 5 {
+        return;
+    }
+    let x = body.x + (body.width.saturating_sub(w)) / 2;
+    let y = body.y + (body.height.saturating_sub(h)) / 2;
+    let area = Rect { x, y, width: w, height: h };
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(AMBER))
+        .title_top(Span::styled(
+            " FIND STATION ",
+            Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            format!(" {} hits  ↑/↓ ⏎ go  esc ", s.matches.len()),
+            Style::default().fg(DIM),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let cursor = if blink_on { '▌' } else { ' ' };
+    let prompt = Line::from(vec![
+        Span::styled(" › ", Style::default().fg(AMBER).add_modifier(Modifier::BOLD)),
+        Span::styled(s.query.clone(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(cursor.to_string(), Style::default().fg(AMBER)),
+    ]);
+
+    let split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+    f.render_widget(Paragraph::new(prompt), split[0]);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(inner.width as usize),
+            Style::default().fg(DIM),
+        ))),
+        split[1],
+    );
+
+    let rows = split[2].height as usize;
+    let scroll = if s.cursor >= rows { s.cursor - rows + 1 } else { 0 };
+    let idx = app.track.station_index();
+    let items: Vec<ListItem> = if s.matches.is_empty() {
+        vec![ListItem::new(Span::styled(" no match", Style::default().fg(DIM)))]
+    } else {
+        s.matches
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(rows)
+            .map(|(i, &m)| {
+                let st = &idx[m];
+                let sel = i == s.cursor;
+                let mark = if sel { "▌" } else { " " };
+                let line = Line::from(vec![
+                    Span::styled(
+                        format!("{mark}● "),
+                        Style::default().fg(route_color(&st.route)),
+                    ),
+                    Span::styled(
+                        trunc(&st.name, (inner.width as usize).saturating_sub(12)),
+                        Style::default().fg(if sel { Color::White } else { PHOS }),
+                    ),
+                    Span::styled(
+                        format!("  {}", st.route.to_uppercase()),
+                        Style::default().fg(DIM),
+                    ),
+                ]);
+                if sel {
+                    ListItem::new(line).style(Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED))
+                } else {
+                    ListItem::new(line)
+                }
+            })
+            .collect()
+    };
+    f.render_widget(List::new(items), split[2]);
 }
 
 /// A bottom-rule key hint: reverse-video key cap + dim label.
@@ -197,11 +291,18 @@ fn system_board(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
 }
 
 fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
-    let (label, key, trains) = match app.snap.boards.get(app.focused) {
-        Some(b) => (b.label.clone(), b.key.clone(), b.trains.as_slice()),
-        None => ("—".into(), String::new(), [].as_slice()),
-    };
+    // The displayed line is the zoom target if zoomed, else the focused board.
+    let key = app.view_route().unwrap_or_default();
+    let board = app.snap.boards.iter().find(|b| b.key == key);
+    let trains: &[crate::cta::Train] = board.map(|b| b.trains.as_slice()).unwrap_or(&[]);
+    let label = board
+        .map(|b| b.label.clone())
+        .unwrap_or_else(|| crate::cta::pretty_route(&key));
     let color = route_color(&key);
+    let zoom_center = match &app.zoom {
+        Some(z) if z.route == key => Some(z.index),
+        _ => None,
+    };
 
     let mut title = vec![
         Span::styled(
@@ -210,7 +311,15 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
         ),
         Span::styled(format!("[{} TRK] ←/→ ", trains.len()), Style::default().fg(DIM)),
     ];
-    if let Some(run) = app.selected_run() {
+    if let Some(c) = zoom_center {
+        // Zoomed: name the station we're centered on.
+        if let Some(st) = app.track.route(&key).and_then(|rt| rt.stations.get(c)) {
+            title.push(Span::styled(
+                format!("⊙ {} ", st.name.to_uppercase()),
+                Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+            ));
+        }
+    } else if let Some(run) = app.selected_run() {
         title.push(Span::styled(
             format!("▌SEL #{run} "),
             Style::default().fg(PHOS).add_modifier(Modifier::BOLD),
@@ -229,7 +338,16 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
         .split(inner);
 
     if map_h > 0 {
-        draw_track_map(f, split[0], app, &key, color, blink_on);
+        match app.track.route(&key) {
+            Some(rt) if zoom_center.is_some() => {
+                draw_track_zoom(f, split[0], app, rt, &key, color, zoom_center.unwrap(), blink_on)
+            }
+            Some(rt) => draw_track_full(f, split[0], app, rt, &key, color, blink_on),
+            None => f.render_widget(
+                Paragraph::new(Span::styled(" no map data", Style::default().fg(DIM))),
+                split[0],
+            ),
+        }
     }
     draw_train_list(f, split[1], trains, app.selected, color, blink_on);
 }
@@ -237,18 +355,11 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
 /// fio 4 — the ASCII track map: a straight rail with station ticks, the home
 /// station starred, and live trains projected onto it (inbound above the rail,
 /// outbound below). Conveys at a glance where every train on the line is.
-fn draw_track_map(f: &mut Frame, area: Rect, app: &App, key: &str, color: Color, blink_on: bool) {
+fn draw_track_full(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::RouteTrack, key: &str, color: Color, blink_on: bool) {
     let w = area.width as usize;
     if w < 8 {
         return;
     }
-    let Some(rt) = app.track.route(key) else {
-        f.render_widget(
-            Paragraph::new(Span::styled(" no map data", Style::default().fg(DIM))),
-            area,
-        );
-        return;
-    };
     let n = rt.stations.len();
     let last = n.saturating_sub(1).max(1);
     let col = |slot: f64| ((slot * (w.saturating_sub(1)) as f64).round() as usize).min(w - 1);
@@ -280,7 +391,7 @@ fn draw_track_map(f: &mut Frame, area: Rect, app: &App, key: &str, color: Color,
     // the upper rail (▸/▶), leftward the lower (◂/◀); filled = approaching.
     let mut up = RowBuf::new(w, ' ', Style::default());
     let mut dn = RowBuf::new(w, ' ', Style::default());
-    for (i, t) in trains_of(app).iter().enumerate() {
+    for (i, t) in trains_of_key(app, key).iter().enumerate() {
         let (Some(lat), Some(lon)) = (t.lat, t.lon) else { continue };
         let Some(pj) = rt.project(lat, lon) else { continue };
         let x = col(rt.pos_to_slot(pj.pos01));
@@ -345,16 +456,119 @@ fn draw_track_map(f: &mut Frame, area: Rect, app: &App, key: &str, color: Color,
         }
     }
 
-    // Radar sweep: a bright column tracks left→right across the rail, with a
-    // dimmer trailing cell, so the board reads as actively scanning.
-    let sweep = (app.frame as usize * 2) % w;
-    let trail = sweep.saturating_sub(1);
-    rail.tint(sweep, Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
-    rail.tint(trail, Style::default().fg(PHOS));
-    up.tint(sweep, Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
-    dn.tint(sweep, Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
-
     let rows = vec![up.into_line(), rail.into_line(), dn.into_line(), lab.into_line()];
+    f.render_widget(Paragraph::new(rows), area);
+}
+
+/// Zoomed track view: a window of ~9 stations centered on `center`, every one
+/// labeled (staggered across two rows), the target starred, trains in the
+/// window placed, and «N»/«N» counts for trains beyond either edge.
+fn draw_track_zoom(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::RouteTrack, key: &str, color: Color, center: usize, blink_on: bool) {
+    let w = area.width as usize;
+    if w < 8 {
+        return;
+    }
+    let n = rt.stations.len();
+    const R: usize = 4; // window radius → up to 9 stations
+    let start = center.saturating_sub(R);
+    let end = (center + R).min(n.saturating_sub(1));
+    let span = (end - start).max(1);
+    // Column of a continuous station-space index within the window.
+    let col = |idx: f64| {
+        (((idx - start as f64) / span as f64) * (w.saturating_sub(1)) as f64)
+            .round()
+            .clamp(0.0, (w - 1) as f64) as usize
+    };
+
+    // Rail + ticks/star for the window stations.
+    let mut rail = RowBuf::new(w, '━', Style::default().fg(scale(color, 0.45)));
+    for i in start..=end {
+        let x = col(i as f64);
+        if i == center {
+            rail.put_prio(x, '★', Style::default().fg(AMBER).add_modifier(Modifier::BOLD), 3);
+        } else if i == 0 || i == n - 1 {
+            rail.put_prio(x, '◆', Style::default().fg(color).add_modifier(Modifier::BOLD), 2);
+        } else {
+            rail.put_prio(x, '┿', Style::default().fg(color), 1);
+        }
+    }
+
+    // Trains: place those whose station-space index falls within the window;
+    // count the rest as off-window overflow at each edge.
+    let mut up = RowBuf::new(w, ' ', Style::default());
+    let mut dn = RowBuf::new(w, ' ', Style::default());
+    let (mut left_off, mut right_off) = (0u32, 0u32);
+    for t in trains_of_key(app, key) {
+        let (Some(lat), Some(lon)) = (t.lat, t.lon) else { continue };
+        let Some(pj) = rt.project(lat, lon) else { continue };
+        let idx = rt.pos_to_index(pj.pos01);
+        if idx < start as f64 - 0.5 {
+            left_off += 1;
+            continue;
+        }
+        if idx > end as f64 + 0.5 {
+            right_off += 1;
+            continue;
+        }
+        let (style, prio) = if t.delayed {
+            if !blink_on {
+                continue;
+            }
+            (Style::default().fg(AMBER).add_modifier(Modifier::BOLD), 3)
+        } else if t.approaching {
+            (Style::default().fg(PHOS).add_modifier(Modifier::BOLD), 2)
+        } else {
+            (Style::default().fg(color).add_modifier(Modifier::BOLD), 1)
+        };
+        let forward = match t.heading {
+            Some(h) => {
+                let r = (h as f64).to_radians();
+                r.sin() * pj.seg.0 + r.cos() * pj.seg.1 >= 0.0
+            }
+            None => t.dir.as_deref() != Some("5"),
+        };
+        let glyph = match (forward, t.approaching) {
+            (true, true) => '▶',
+            (true, false) => '▸',
+            (false, true) => '◀',
+            (false, false) => '◂',
+        };
+        let row = if forward { &mut up } else { &mut dn };
+        row.put_prio(col(idx), glyph, style, prio);
+    }
+    if left_off > 0 {
+        up.put(0, '«', Style::default().fg(DIM));
+        dn.put(0, '«', Style::default().fg(DIM));
+    }
+    if right_off > 0 {
+        up.put(w - 1, '»', Style::default().fg(DIM));
+        dn.put(w - 1, '»', Style::default().fg(DIM));
+    }
+
+    // Two staggered label rows so every window station fits without overlap.
+    let mut lab_a = RowBuf::new(w, ' ', Style::default().fg(DIM));
+    let mut lab_b = RowBuf::new(w, ' ', Style::default().fg(DIM));
+    for i in start..=end {
+        let x = col(i as f64);
+        let is_center = i == center;
+        let label = trunc(&rt.stations[i].name, (w / span).saturating_sub(1).max(4));
+        let style = if is_center {
+            Style::default().fg(AMBER).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let lab = if (i - start) % 2 == 0 { &mut lab_a } else { &mut lab_b };
+        let lx = x.saturating_sub(label.chars().count() / 2).min(w.saturating_sub(label.chars().count()));
+        lab.write_str(lx, &label, style);
+    }
+
+    let rows = vec![
+        up.into_line(),
+        rail.into_line(),
+        dn.into_line(),
+        lab_a.into_line(),
+        lab_b.into_line(),
+    ];
     f.render_widget(Paragraph::new(rows), area);
 }
 
@@ -420,11 +634,12 @@ fn draw_train_list(f: &mut Frame, area: Rect, trains: &[crate::cta::Train], sele
     f.render_widget(List::new(rows), area);
 }
 
-/// Trains on the currently focused line (empty if none).
-fn trains_of(app: &App) -> &[crate::cta::Train] {
+/// Trains on the board with the given route key (empty if not tracked).
+fn trains_of_key<'a>(app: &'a App, key: &str) -> &'a [crate::cta::Train] {
     app.snap
         .boards
-        .get(app.focused)
+        .iter()
+        .find(|b| b.key == key)
         .map(|b| b.trains.as_slice())
         .unwrap_or(&[])
 }
@@ -542,13 +757,6 @@ impl RowBuf {
     fn write_str(&mut self, x0: usize, s: &str, style: Style) {
         for (i, c) in s.chars().enumerate() {
             self.put(x0 + i, c, style);
-        }
-    }
-
-    /// Recolor a cell without changing its glyph (used by the radar sweep).
-    fn tint(&mut self, x: usize, style: Style) {
-        if x < self.st.len() {
-            self.st[x] = style;
         }
     }
 

@@ -53,8 +53,17 @@ pub struct RouteTrack {
     pub stations: Vec<TrackStation>, // ordered by pos01
 }
 
+/// A searchable reference to one station on one line.
+#[derive(Clone)]
+pub struct StationRef {
+    pub name: String,
+    pub route: String,
+    pub index: usize, // position in that route's ordered station list
+}
+
 pub struct TrackMap {
     routes: HashMap<String, RouteTrack>,
+    index: Vec<StationRef>, // flat, for fuzzy search
 }
 
 fn planar(lon: f64, lat: f64) -> (f64, f64) {
@@ -146,6 +155,11 @@ impl RouteTrack {
         }
         1.0
     }
+
+    /// Continuous station-index of a raw position (0..n-1), for the zoom window.
+    pub fn pos_to_index(&self, p: f64) -> f64 {
+        self.pos_to_slot(p) * (self.stations.len().saturating_sub(1)) as f64
+    }
 }
 
 impl TrackMap {
@@ -153,11 +167,31 @@ impl TrackMap {
     pub fn load() -> Self {
         let raw: HashMap<String, RawTrack> =
             serde_json::from_str(TRACK_JSON).expect("track.json is a valid baked asset");
-        let routes = raw.into_iter().map(|(k, v)| (k, RouteTrack::build(v))).collect();
-        TrackMap { routes }
+        let routes: HashMap<String, RouteTrack> =
+            raw.into_iter().map(|(k, v)| (k, RouteTrack::build(v))).collect();
+
+        // Flat, searchable index of every station on every line (sorted by route
+        // for stable ordering across runs).
+        let mut keys: Vec<&String> = routes.keys().collect();
+        keys.sort();
+        let mut index = Vec::new();
+        for k in keys {
+            for (i, s) in routes[k].stations.iter().enumerate() {
+                index.push(StationRef {
+                    name: s.name.clone(),
+                    route: k.clone(),
+                    index: i,
+                });
+            }
+        }
+        TrackMap { routes, index }
     }
 
     pub fn route(&self, key: &str) -> Option<&RouteTrack> {
         self.routes.get(&key.to_lowercase())
+    }
+
+    pub fn station_index(&self) -> &[StationRef] {
+        &self.index
     }
 }

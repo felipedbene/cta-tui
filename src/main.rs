@@ -86,6 +86,15 @@ async fn main() -> Result<()> {
         let snap = cta.snapshot(&refs, &home_mapid).await;
         let mut app = App::new(home_name);
         app.apply(snap);
+        // Drive search/zoom for off-screen visual checks.
+        if let Ok(q) = std::env::var("CTA_SEARCH") {
+            app.open_search();
+            for c in q.chars() { app.search_input(c); }
+        } else if let Ok(q) = std::env::var("CTA_ZOOM") {
+            app.open_search();
+            for c in q.chars() { app.search_input(c); }
+            app.commit_search();
+        }
         let w: u16 = std::env::var("CTA_COLS").ok().and_then(|v| v.parse().ok()).unwrap_or(110);
         let h: u16 = std::env::var("CTA_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(26);
         let backend = ratatui::backend::TestBackend::new(w, h);
@@ -163,14 +172,32 @@ async fn run<B: ratatui::backend::Backend>(
             Some(Ok(ev)) = events.next() => {
                 if let Event::Key(k) = ev {
                     if k.kind == KeyEventKind::Press {
-                        match k.code {
-                            KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
-                            KeyCode::Char('r') => { let _ = refresh_tx.try_send(()); app.loading = true; }
-                            KeyCode::Right | KeyCode::Tab => app.next_route(),
-                            KeyCode::Left  => app.prev_route(),
-                            KeyCode::Down  => app.select_next(),
-                            KeyCode::Up    => app.select_prev(),
-                            _ => {}
+                        if app.search.is_some() {
+                            // Search overlay captures all keys.
+                            match k.code {
+                                KeyCode::Esc => app.close_search(),
+                                KeyCode::Enter => app.commit_search(),
+                                KeyCode::Up => app.search_move(-1),
+                                KeyCode::Down => app.search_move(1),
+                                KeyCode::Backspace => app.search_backspace(),
+                                KeyCode::Char(c) => app.search_input(c),
+                                _ => {}
+                            }
+                        } else {
+                            match k.code {
+                                KeyCode::Char('q') => app.should_quit = true,
+                                KeyCode::Esc => {
+                                    if app.zoom.is_some() { app.clear_zoom(); }
+                                    else { app.should_quit = true; }
+                                }
+                                KeyCode::Char('/') => app.open_search(),
+                                KeyCode::Char('r') => { let _ = refresh_tx.try_send(()); app.loading = true; }
+                                KeyCode::Right | KeyCode::Tab => { app.clear_zoom(); app.next_route(); }
+                                KeyCode::Left  => { app.clear_zoom(); app.prev_route(); }
+                                KeyCode::Down  => app.select_next(),
+                                KeyCode::Up    => app.select_prev(),
+                                _ => {}
+                            }
                         }
                     }
                 }

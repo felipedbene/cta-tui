@@ -4,6 +4,19 @@ use crate::cta::Snapshot;
 use crate::track::TrackMap;
 use ratatui::style::Color;
 
+/// Active station fuzzy-search overlay.
+pub struct Search {
+    pub query: String,
+    pub matches: Vec<usize>, // indices into TrackMap::station_index()
+    pub cursor: usize,
+}
+
+/// A station the map is zoomed in on.
+pub struct Zoom {
+    pub route: String,
+    pub index: usize, // station index within that route
+}
+
 pub struct App {
     pub snap: Snapshot,
     pub focused: usize,  // index into snap.boards
@@ -13,6 +26,8 @@ pub struct App {
     pub home_label: String,
     pub frame: u64, // animation tick, drives the radar sweep + blink
     pub track: TrackMap,
+    pub search: Option<Search>,
+    pub zoom: Option<Zoom>,
 }
 
 impl App {
@@ -26,6 +41,8 @@ impl App {
             home_label,
             frame: 0,
             track: TrackMap::load(),
+            search: None,
+            zoom: None,
         }
     }
 
@@ -83,6 +100,134 @@ impl App {
             .and_then(|b| b.trains.get(self.selected))
             .map(|t| t.run.as_str())
     }
+
+    // --- station search + zoom ---
+
+    pub fn open_search(&mut self) {
+        self.search = Some(Search { query: String::new(), matches: Vec::new(), cursor: 0 });
+        self.recompute_matches();
+    }
+
+    pub fn close_search(&mut self) {
+        self.search = None;
+    }
+
+    pub fn search_input(&mut self, c: char) {
+        if let Some(s) = &mut self.search {
+            s.query.push(c);
+        }
+        self.recompute_matches();
+    }
+
+    pub fn search_backspace(&mut self) {
+        if let Some(s) = &mut self.search {
+            s.query.pop();
+        }
+        self.recompute_matches();
+    }
+
+    pub fn search_move(&mut self, delta: i32) {
+        if let Some(s) = &mut self.search {
+            if s.matches.is_empty() {
+                return;
+            }
+            let last = s.matches.len() - 1;
+            s.cursor = (s.cursor as i32 + delta).clamp(0, last as i32) as usize;
+        }
+    }
+
+    /// Rank the whole station index against the current query.
+    fn recompute_matches(&mut self) {
+        let Some(s) = &mut self.search else { return };
+        let q = s.query.trim();
+        let mut scored: Vec<(i32, usize)> = self
+            .track
+            .station_index()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, st)| fuzzy_score(&st.name, q).map(|sc| (sc, i)))
+            .collect();
+        // Best score first; ties broken by station name for stability.
+        scored.sort_by(|a, b| {
+            b.0.cmp(&a.0).then_with(|| {
+                self.track.station_index()[a.1]
+                    .name
+                    .cmp(&self.track.station_index()[b.1].name)
+            })
+        });
+        s.matches = scored.into_iter().map(|(_, i)| i).collect();
+        s.cursor = 0;
+    }
+
+    /// Jump to the highlighted result: focus its line and zoom on the station.
+    pub fn commit_search(&mut self) {
+        let Some(s) = &self.search else { return };
+        let Some(&idx) = s.matches.get(s.cursor) else {
+            self.close_search();
+            return;
+        };
+        let st = self.track.station_index()[idx].clone();
+        if let Some(pos) = self.snap.boards.iter().position(|b| b.key == st.route) {
+            self.focused = pos;
+            self.selected = 0;
+        }
+        self.zoom = Some(Zoom { route: st.route, index: st.index });
+        self.close_search();
+    }
+
+    pub fn clear_zoom(&mut self) {
+        self.zoom = None;
+    }
+
+    /// Route key the center panel should display: the zoom target if zoomed,
+    /// otherwise the focused board's line.
+    pub fn view_route(&self) -> Option<String> {
+        if let Some(z) = &self.zoom {
+            return Some(z.route.clone());
+        }
+        self.snap.boards.get(self.focused).map(|b| b.key.clone())
+    }
+}
+
+/// Case-insensitive subsequence fuzzy match. Returns `None` if `needle` isn't a
+/// subsequence of `haystack`, else a score where higher is better — rewarding
+/// word-boundary hits and contiguous runs, penalizing gaps and a late start.
+pub fn fuzzy_score(haystack: &str, needle: &str) -> Option<i32> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let hay: Vec<char> = haystack.to_lowercase().chars().collect();
+    let mut hi = 0usize;
+    let mut score = 0i32;
+    let mut prev: Option<usize> = None;
+    for nc in needle.to_lowercase().chars() {
+        if nc == ' ' {
+            continue;
+        }
+        let mut j = hi;
+        let found = loop {
+            if j >= hay.len() {
+                return None;
+            }
+            if hay[j] == nc {
+                break j;
+            }
+            j += 1;
+        };
+        let boundary = found == 0 || !hay[found - 1].is_alphanumeric();
+        if boundary {
+            score += 15;
+        }
+        match prev {
+            Some(p) if found == p + 1 => score += 10, // contiguous run
+            Some(p) => score -= ((found - p - 1).min(10)) as i32,
+            None => score -= found as i32, // earlier first hit is better
+        }
+        score += 1;
+        prev = Some(found);
+        hi = found + 1;
+    }
+    Some(score)
 }
 
 /// Brand color per CTA line key.
