@@ -9,6 +9,7 @@
 
 mod app;
 mod cta;
+mod track;
 mod ui;
 
 use anyhow::Result;

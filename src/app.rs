@@ -1,6 +1,7 @@
 //! UI-side application state.
 
 use crate::cta::Snapshot;
+use crate::track::TrackMap;
 use ratatui::style::Color;
 
 pub struct App {
@@ -11,6 +12,7 @@ pub struct App {
     pub should_quit: bool,
     pub home_label: String,
     pub frame: u64, // animation tick, drives the radar sweep + blink
+    pub track: TrackMap,
 }
 
 impl App {
@@ -23,6 +25,7 @@ impl App {
             should_quit: false,
             home_label,
             frame: 0,
+            track: TrackMap::load(),
         }
     }
 

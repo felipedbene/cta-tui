@@ -42,10 +42,9 @@ pub struct Train {
     pub approaching: bool,
     pub delayed: bool,
     pub heading: Option<u16>,
-    // Reserved for fio 4 (ASCII track map): project lat/lon onto a station line.
-    #[allow(dead_code)]
+    pub dir: Option<String>, // trDr: trip direction ("1"/"5"), splits the two rails
+    // fio 4 (ASCII track map): projected onto a station line at render time.
     pub lat: Option<f64>,
-    #[allow(dead_code)]
     pub lon: Option<f64>,
 }
 
@@ -118,6 +117,8 @@ struct RawTrain {
     is_app: Option<String>,
     #[serde(rename = "isDly")]
     is_dly: Option<String>,
+    #[serde(rename = "trDr")]
+    tr_dr: Option<String>,
     lat: Option<String>,
     lon: Option<String>,
     heading: Option<String>,
@@ -252,6 +253,7 @@ impl Cta {
                         eta_min: eta_minutes(&t.arr_t),
                         approaching: truthy(&t.is_app),
                         delayed: truthy(&t.is_dly),
+                        dir: t.tr_dr,
                         heading: t.heading.and_then(|h| h.parse().ok()),
                         lat: t.lat.and_then(|v| v.parse().ok()),
                         lon: t.lon.and_then(|v| v.parse().ok()),

@@ -46,28 +46,49 @@ CTA_RENDER=1 CTA_KEY=… cargo run    # draw one frame off-screen and print as t
 
 ## Layout
 
-- **left** — system board: every line + live status (keyless `routes.aspx`).
-- **center** — focused line's trains: heading arrow, run #, ETA, next stop,
-  DLY (amber) / APP (green) flags. `←/→` cycles lines.
+- **left** — system board: the 8 'L' lines + live status (keyless `routes.aspx`).
+- **center** — focused line. A **track map** strip on top (fio 4, below) and the
+  train list under it: heading arrow, run #, ETA, DLY (amber) / APP (green)
+  flags, next stop, terminal dest. `←/→` cycles lines, `↑/↓` scrolls the list.
 - **right** — home-station arrivals ticker (`ttarrivals.aspx`).
+
+## Track map (fio 4) — `src/track.rs` + `scripts/build_track.mjs`
+
+The center strip is a NORAD-style line diagram: a rail of evenly-spaced station
+ticks `┿`, `◆` termini, the home station starred `★`, and every live train
+projected onto it (inbound above the rail, outbound below, by trip direction).
+
+Geometry is baked at build time by `scripts/build_track.mjs`, which reads the
+Worker repo's `public/lines.geojson` (per-route rail polyline) and
+`public/ctaData.js` (station names + lat/lon) into `src/track.json`. At runtime
+each station and train lat/lon is projected to a 0..1 position along the rail;
+positions are then warped into evenly-spaced *station space* so the dense
+downtown stretch stays legible.
+
+```sh
+node scripts/build_track.mjs ../cta   # regenerate src/track.json from the Worker
+```
+
+Caveat: branched lines (Green) concatenate their polyline features, so the very
+ends and branch trains snap to the nearest trunk point — termini labels there
+are approximate. Single-feature lines (Red, Blue, …) are exact.
 
 ## Data layer (`src/cta.rs`)
 
 Three feeds folded into one `Snapshot` per poll:
 - `ttpositions.aspx` — live train positions (key)
 - `ttarrivals.aspx`  — arrivals at home station (key)
-- `routes.aspx`      — system status (keyless)
+- `routes.aspx`      — system status (keyless, filtered to the 8 rail lines)
 
 CTA JSON collapses single-element arrays into bare objects; `OneOrMany<T>`
-normalizes that everywhere. `lat`/`lon`/`heading` are kept on `Train` for the
-next fio.
+normalizes that everywhere.
 
 ## Roadmap (next fios)
 
 - **fio 2** — Green Line alerts panel (`alerts.aspx?routeid=g`, has CDATA noise).
 - **fio 3** — Kedzie approach notifier: bell + flash when a Green train ≤6 min.
-- **fio 4** — ASCII track diagram per line using `lat`/`lon` projected onto a
-  precomputed station sequence (the real "NORAD map" in characters).
+- **fio 4** — ✅ done: ASCII track map (see above).
 - **fio 5** — desktop notification on delay, via `notify-rust`.
+- per-branch track maps for the Green/branched lines (fix the terminus caveat).
 
 [ratatui]: https://ratatui.rs

@@ -11,7 +11,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem},
+    widgets::{Block, BorderType, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
@@ -202,8 +202,99 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
         ),
     ]);
 
+    let block = panel_block(title, color, true);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Track map strip on top when there's vertical room, train list below.
+    let map_h: u16 = if inner.height >= 9 { 5 } else { 0 };
+    let split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(map_h), Constraint::Min(0)])
+        .split(inner);
+
+    if map_h > 0 {
+        draw_track_map(f, split[0], app, &key, color, blink_on);
+    }
+    draw_train_list(f, split[1], trains, app.scroll, color, blink_on);
+}
+
+/// fio 4 — the ASCII track map: a straight rail with station ticks, the home
+/// station starred, and live trains projected onto it (inbound above the rail,
+/// outbound below). Conveys at a glance where every train on the line is.
+fn draw_track_map(f: &mut Frame, area: Rect, app: &App, key: &str, color: Color, blink_on: bool) {
+    let w = area.width as usize;
+    if w < 8 {
+        return;
+    }
+    let Some(rt) = app.track.route(key) else {
+        f.render_widget(
+            Paragraph::new(Span::styled(" no map data", Style::default().fg(DIM))),
+            area,
+        );
+        return;
+    };
+    let n = rt.stations.len();
+    let last = n.saturating_sub(1).max(1);
+    let col = |slot: f64| ((slot * (w.saturating_sub(1)) as f64).round() as usize).min(w - 1);
+    // Stations are evenly spaced (strip-map style); trains warp through the same
+    // station space so they land proportionally between their neighbors.
+    let xof_station = |i: usize| col(i as f64 / last as f64);
+    let home = app.home_label.to_lowercase();
+
+    // Rail: heavy line, station ticks, ◆ termini, ★ home. Priority keeps the
+    // star/terminus from being clobbered when stations crowd the same column.
+    let mut rail = RowBuf::new(w, '━', Style::default().fg(DIM));
+    for (i, s) in rt.stations.iter().enumerate() {
+        let x = xof_station(i);
+        let name = s.name.to_lowercase();
+        if !home.is_empty() && (name == home || name.contains(&home)) {
+            rail.put_prio(x, '★', Style::default().fg(AMBER).add_modifier(Modifier::BOLD), 3);
+        } else if i == 0 || i == n - 1 {
+            rail.put_prio(x, '◆', Style::default().fg(color).add_modifier(Modifier::BOLD), 2);
+        } else {
+            rail.put_prio(x, '┿', Style::default().fg(color), 1);
+        }
+    }
+
+    // Trains: split by trip direction onto the two rails, projected by lat/lon.
+    let mut up = RowBuf::new(w, ' ', Style::default());
+    let mut dn = RowBuf::new(w, ' ', Style::default());
+    for t in trains_of(app) {
+        let (Some(lat), Some(lon)) = (t.lat, t.lon) else { continue };
+        let Some(p) = rt.project(lat, lon) else { continue };
+        let x = col(rt.pos_to_slot(p));
+        let (style, prio) = if t.delayed {
+            if !blink_on {
+                continue; // blink off → leave the cell empty this frame
+            }
+            (Style::default().fg(AMBER).add_modifier(Modifier::BOLD), 3)
+        } else if t.approaching {
+            (Style::default().fg(PHOS).add_modifier(Modifier::BOLD), 2)
+        } else {
+            (Style::default().fg(color).add_modifier(Modifier::BOLD), 1)
+        };
+        let glyph = heading_arrow(t.heading);
+        let row = if t.dir.as_deref() == Some("1") { &mut up } else { &mut dn };
+        row.put_prio(x, glyph, style, prio);
+    }
+
+    // Terminus labels under the rail.
+    let mut lab = RowBuf::new(w, ' ', Style::default().fg(DIM));
+    if let (Some(first), Some(last)) = (rt.stations.first(), rt.stations.last()) {
+        let half = w / 2 - 1;
+        lab.write_str(0, &trunc(&first.name, half), Style::default().fg(DIM));
+        let r = trunc(&last.name, half);
+        lab.write_str(w.saturating_sub(r.chars().count()), &r, Style::default().fg(DIM));
+    }
+
+    let rows = vec![up.into_line(), rail.into_line(), dn.into_line(), lab.into_line()];
+    f.render_widget(Paragraph::new(rows), area);
+}
+
+fn draw_train_list(f: &mut Frame, area: Rect, trains: &[crate::cta::Train], scroll: usize, color: Color, blink_on: bool) {
     let mut rows: Vec<ListItem> = Vec::new();
-    for t in trains.iter().skip(app.scroll) {
+    for t in trains.iter().skip(scroll) {
         let eta = fmt_eta(t.eta_min);
         let (flag_style, tag) = if t.delayed {
             let s = if blink_on {
@@ -244,10 +335,16 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
             Style::default().fg(DIM),
         )));
     }
-    f.render_widget(
-        List::new(rows).block(panel_block(title, color, true)),
-        area,
-    );
+    f.render_widget(List::new(rows), area);
+}
+
+/// Trains on the currently focused line (empty if none).
+fn trains_of(app: &App) -> &[crate::cta::Train] {
+    app.snap
+        .boards
+        .get(app.focused)
+        .map(|b| b.trains.as_slice())
+        .unwrap_or(&[])
 }
 
 fn arrivals_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
@@ -324,6 +421,63 @@ fn short_line(name: &str) -> String {
         other => other,
     }
     .to_string()
+}
+
+/// A fixed-width row of styled cells. Markers are placed by column, then
+/// adjacent same-style cells are coalesced into spans for rendering.
+struct RowBuf {
+    ch: Vec<char>,
+    st: Vec<Style>,
+    prio: Vec<u8>,
+}
+
+impl RowBuf {
+    fn new(w: usize, fill: char, style: Style) -> Self {
+        RowBuf {
+            ch: vec![fill; w],
+            st: vec![style; w],
+            prio: vec![0; w],
+        }
+    }
+
+    fn put(&mut self, x: usize, ch: char, style: Style) {
+        if x < self.ch.len() {
+            self.ch[x] = ch;
+            self.st[x] = style;
+        }
+    }
+
+    /// Place a cell only if it outranks what's already there (keeps APP/DLY
+    /// trains visible when several project onto the same column).
+    fn put_prio(&mut self, x: usize, ch: char, style: Style, prio: u8) {
+        if x < self.ch.len() && prio >= self.prio[x] {
+            self.ch[x] = ch;
+            self.st[x] = style;
+            self.prio[x] = prio;
+        }
+    }
+
+    fn write_str(&mut self, x0: usize, s: &str, style: Style) {
+        for (i, c) in s.chars().enumerate() {
+            self.put(x0 + i, c, style);
+        }
+    }
+
+    fn into_line(self) -> Line<'static> {
+        let mut spans = Vec::new();
+        let mut i = 0;
+        let len = self.ch.len();
+        while i < len {
+            let style = self.st[i];
+            let mut buf = String::new();
+            while i < len && self.st[i] == style {
+                buf.push(self.ch[i]);
+                i += 1;
+            }
+            spans.push(Span::styled(buf, style));
+        }
+        Line::from(spans)
+    }
 }
 
 fn trunc(s: &str, max: usize) -> String {
