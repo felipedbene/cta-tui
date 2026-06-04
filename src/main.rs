@@ -63,6 +63,11 @@ async fn main() -> Result<()> {
         std::env::var("CTA_NOTIFY").unwrap_or_default().to_lowercase().as_str(),
         "0" | "false" | "off"
     );
+    // Track orientation defaults to vertical; CTA_VERTICAL=0 starts horizontal.
+    let vertical_default = !matches!(
+        std::env::var("CTA_VERTICAL").unwrap_or_default().to_lowercase().as_str(),
+        "0" | "false" | "off"
+    );
 
     // Headless probe: one snapshot to stdout, no terminal. `CTA_PROBE=1 cargo run`.
     if std::env::var("CTA_PROBE").is_ok() {
@@ -157,7 +162,7 @@ async fn main() -> Result<()> {
     execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    let res = run(&mut terminal, &mut rx, refresh_tx, home_name, alert_min, notify_enabled).await;
+    let res = run(&mut terminal, &mut rx, refresh_tx, home_name, alert_min, notify_enabled, vertical_default).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -172,8 +177,10 @@ async fn run<B: ratatui::backend::Backend>(
     home_name: String,
     alert_min: i64,
     notify_enabled: bool,
+    vertical_default: bool,
 ) -> Result<()> {
     let mut app = App::new(home_name, alert_min, notify_enabled);
+    app.vertical = vertical_default;
     let mut events = EventStream::new();
     // ~4 fps render tick so the radar sweep + APP/DLY blink stay alive between polls.
     let mut frame = tokio::time::interval(Duration::from_millis(250));

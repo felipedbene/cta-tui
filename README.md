@@ -37,6 +37,8 @@ CTA_KEY=your_key_here cargo run --release
 | `CTA_REFRESH`    | `30`                             | seconds between polls           |
 | `CTA_ALERT_MIN`  | `6`                              | bell + flash when a home train is ≤ this many min away (`0` disables) |
 | `CTA_NOTIFY`     | `1`                              | desktop notification when a tracked train goes delayed (`0` disables) |
+| `CTA_NOTIFY_ICON`| `🚇`                             | emoji prefixed to the notification title; or an image path (uses `terminal-notifier -appIcon` if installed) |
+| `CTA_VERTICAL`   | `1`                              | start in vertical track orientation (`0` for horizontal); `v` toggles live |
 
 ## Debug modes (no terminal needed)
 
