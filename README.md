@@ -26,19 +26,55 @@ Get a free key: https://www.transitchicago.com/developers/traintrackerapply/
 CTA_KEY=your_key_here cargo run --release
 ```
 
-## Install / distribute
+## Download
 
-It's a single self-contained binary (~2.7 MB, TLS via rustls, station geometry
-baked in — no runtime files, no OpenSSL). The `release` profile is LTO+stripped.
+Prebuilt single binaries are attached to each [release]. They're self-contained
+(~2.7 MB, TLS via rustls, station geometry baked in — no runtime files, no
+OpenSSL). Pick your platform:
 
-- **From source:** `cargo install --path .` (or grab `target/release/cta-tui`).
-- **Prebuilt binaries:** pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`,
-  which builds on each platform's native runner (macOS arm64/x86_64, Linux
-  x86_64/aarch64 musl-static, Windows x86_64) and attaches tarballs + SHA256s to
-  the GitHub Release.
-- **Local multi-target build:** `dist/release.sh` packages into `dist/out/`
-  (builds a macOS universal binary via `lipo`; for Linux/Windows targets it uses
-  `cargo-zigbuild` or `cross` if installed, else skips them).
+| Platform              | Asset                                          |
+|-----------------------|------------------------------------------------|
+| macOS (Apple Silicon) | `cta-tui-vX.Y.Z-aarch64-apple-darwin.tar.gz`   |
+| macOS (Intel)         | `cta-tui-vX.Y.Z-x86_64-apple-darwin.tar.gz`    |
+| Linux (x86_64, static)| `cta-tui-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz`  |
+| Linux (ARM64, static) | `cta-tui-vX.Y.Z-aarch64-unknown-linux-musl.tar.gz` |
+| Windows (x86_64)      | `cta-tui-vX.Y.Z-x86_64-pc-windows-msvc.zip`    |
+
+**macOS / Linux** — download, verify, extract, run (Apple-Silicon example):
+
+```sh
+gh release download --repo felipedbene/cta-tui --pattern '*aarch64-apple-darwin*'
+shasum -a 256 -c cta-tui-*-aarch64-apple-darwin.tar.gz.sha256   # verify
+tar xzf cta-tui-*-aarch64-apple-darwin.tar.gz
+CTA_KEY=your_key_here ./cta-tui
+```
+
+No `gh`? Grab it from the [releases page] or with curl:
+
+```sh
+curl -fsSL -O https://github.com/felipedbene/cta-tui/releases/latest/download/cta-tui-v0.1.0-aarch64-apple-darwin.tar.gz
+```
+
+macOS marks unsigned downloads as quarantined; if Gatekeeper blocks it, clear
+the flag once: `xattr -d com.apple.quarantine ./cta-tui` (or right-click → Open).
+
+**Windows** — download the `.zip` from the [releases page], extract `cta-tui.exe`,
+then in PowerShell: `$env:CTA_KEY="your_key_here"; .\cta-tui.exe`.
+
+## Build from source
+
+```sh
+cargo install --path .        # installs `cta-tui` into ~/.cargo/bin
+# or: cargo build --release   # → target/release/cta-tui
+```
+
+The `release` profile is LTO + stripped + `panic=abort`. Cross-platform releases
+are built by `.github/workflows/release.yml` on each platform's native runner
+when a `vX.Y.Z` tag is pushed; `dist/release.sh` packages binaries locally (macOS
+universal via `lipo`; Linux/Windows via `cargo-zigbuild`/`cross` when installed).
+
+[release]: https://github.com/felipedbene/cta-tui/releases/latest
+[releases page]: https://github.com/felipedbene/cta-tui/releases
 
 ## Config (env vars)
 
