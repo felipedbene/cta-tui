@@ -42,6 +42,25 @@ fn is_landmark(name: &str) -> bool {
     LANDMARKS.contains(&n.as_str())
 }
 
+/// Downtown trunk stations for the LOOP convergence panel — (display, next_station
+/// match key). Trains across every line whose next stop matches are tallied here.
+const LOOP_STATIONS: &[(&str, &str)] = &[
+    ("Clark/Lake", "clark/lake"),
+    ("State/Lake", "state/lake"),
+    ("Washington/Wells", "washington/wells"),
+    ("Quincy/Wells", "quincy"),
+    ("LaSalle/Van Buren", "van buren"),
+    ("Library", "library"),
+    ("Adams/Wabash", "adams/wabash"),
+    ("Washington/Wabash", "washington/wabash"),
+    ("Roosevelt", "roosevelt"),
+    ("Jackson", "jackson"),
+    ("Monroe", "monroe"),
+    ("Grand", "grand"),
+    ("Chicago", "chicago"),
+    ("Merchandise Mart", "merchandise"),
+];
+
 /// Scale an RGB color's brightness (used to dim the rail below its ticks).
 fn scale(c: Color, f: f64) -> Color {
     match c {
@@ -162,7 +181,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     .right_aligned();
 
     let mut legend_spans = Vec::new();
-    for (k, label) in [("/", "FIND"), ("a", "ALERTS"), ("i", "INTEL"), ("s", "SPEAK"), ("v", "VERT"), ("q", "QUIT"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
+    for (k, label) in [("/", "FIND"), ("a", "ALERTS"), ("i", "INTEL"), ("l", "LOOP"), ("s", "SPEAK"), ("v", "VERT"), ("q", "QUIT"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
         legend_spans.extend(key(k, label));
     }
     let legend = Line::from(legend_spans);
@@ -223,9 +242,55 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.show_ai {
         ai_overlay(f, inner, app);
     }
+    if app.show_loop {
+        loop_overlay(f, inner, app);
+    }
     if app.search.is_some() {
         search_overlay(f, inner, app, blink_on);
     }
+}
+
+/// LOOP convergence: downtown trunk stations with each line's inbound trains
+/// overlaid as colored dots — the terminal answer to the web's bright Loop cluster.
+fn loop_overlay(f: &mut Frame, body: Rect, app: &App) {
+    let w = 56.min(body.width.saturating_sub(2));
+    let h = (LOOP_STATIONS.len() as u16 + 2).min(body.height.saturating_sub(2));
+    if w < 30 || h < 6 {
+        return;
+    }
+    let x = body.x + (body.width.saturating_sub(w)) / 2;
+    let y = body.y + (body.height.saturating_sub(h)) / 2;
+    let area = Rect { x, y, width: w, height: h };
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(GRID))
+        .title_top(Span::styled(" ◢ LOOP CONVERGENCE ", Style::default().fg(GRID).add_modifier(Modifier::BOLD)))
+        .title_bottom(Span::styled(" inbound trains per downtown stop · esc/l ", Style::default().fg(DIM)));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (disp, key) in LOOP_STATIONS {
+        let mut spans = vec![Span::styled(format!("{:<22}", trunc(disp, 22)), Style::default().fg(Color::White))];
+        let mut total = 0usize;
+        for b in &app.snap.boards {
+            let cnt = b.trains.iter().filter(|t| t.next_station.to_lowercase().contains(key)).count();
+            if cnt > 0 {
+                total += cnt;
+                spans.push(Span::styled(
+                    format!(" {}{}", "●".repeat(cnt.min(4)), if cnt > 4 { "⁺" } else { "" }),
+                    Style::default().fg(route_color(&b.key)),
+                ));
+            }
+        }
+        if total == 0 {
+            spans.push(Span::styled(" ·", Style::default().fg(DIM)));
+        }
+        lines.push(Line::from(spans));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn epoch_secs() -> i64 {

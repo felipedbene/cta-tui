@@ -35,7 +35,8 @@ pub struct App {
     pub orient_override: Option<bool>, // None = auto by width; Some = forced (v / CTA_VERTICAL)
     // AI layer (polled by the daemon into local SQLite, read here).
     pub ai: AiState,
-    pub show_ai: bool, // intel panel (SITREP + event advisory) overlay
+    pub show_ai: bool,   // intel panel (SITREP + event advisory) overlay
+    pub show_loop: bool, // LOOP convergence overlay
     pub voice: bool,               // speak AI text via the OS TTS command
     last_spoken: String,           // last dispatch line spoken (dedupe)
     pending_speak: Option<String>, // utterance queued for main → tts::speak
@@ -73,6 +74,7 @@ impl App {
             orient_override: None,
             ai: AiState::default(),
             show_ai: false,
+            show_loop: false,
             voice: false,
             last_spoken: String::new(),
             pending_speak: None,
@@ -333,6 +335,10 @@ impl App {
         if self.show_ai {
             self.speak_intel(); // read the SITREP + advisory aloud (voice only)
         }
+    }
+
+    pub fn toggle_loop(&mut self) {
+        self.show_loop = !self.show_loop;
     }
 
     pub fn toggle_voice(&mut self) {

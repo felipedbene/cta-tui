@@ -120,6 +120,9 @@ async fn main() -> Result<()> {
         if std::env::var("CTA_INTEL").is_ok() {
             app.show_ai = true;
         }
+        if std::env::var("CTA_LOOP").is_ok() {
+            app.show_loop = true;
+        }
         // Drive search/zoom for off-screen visual checks.
         if let Ok(q) = std::env::var("CTA_SEARCH") {
             app.open_search();
@@ -292,7 +295,8 @@ async fn run<B: ratatui::backend::Backend>(
                             match k.code {
                                 KeyCode::Char('q') => app.should_quit = true,
                                 KeyCode::Esc => {
-                                    if app.show_ai { app.show_ai = false; }
+                                    if app.show_loop { app.show_loop = false; }
+                                    else if app.show_ai { app.show_ai = false; }
                                     else if app.show_alerts { app.show_alerts = false; }
                                     else if app.zoom.is_some() { app.clear_zoom(); }
                                     else { app.should_quit = true; }
@@ -300,6 +304,7 @@ async fn run<B: ratatui::backend::Backend>(
                                 KeyCode::Char('/') => app.open_search(),
                                 KeyCode::Char('a') => app.toggle_alerts(),
                                 KeyCode::Char('i') => app.toggle_ai(),
+                                KeyCode::Char('l') => app.toggle_loop(),
                                 KeyCode::Char('s') => app.toggle_voice(),
                                 KeyCode::Char('v') => app.toggle_vertical(),
                                 KeyCode::Char('r') => { let _ = refresh_tx.try_send(()); app.loading = true; }
