@@ -11,7 +11,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 
@@ -104,7 +104,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     .right_aligned();
 
     let mut legend_spans = Vec::new();
-    for (k, label) in [("/", "FIND"), ("a", "ALERTS"), ("v", "VERT"), ("q", "QUIT"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
+    for (k, label) in [("/", "FIND"), ("a", "ALERTS"), ("i", "INTEL"), ("v", "VERT"), ("q", "QUIT"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
         legend_spans.extend(key(k, label));
     }
     let legend = Line::from(legend_spans);
@@ -134,6 +134,13 @@ pub fn draw(f: &mut Frame, app: &App) {
     let inner = frame.inner(f.area());
     f.render_widget(frame, f.area());
 
+    // Reserve the top row for the live AI dispatch bar.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+    dispatch_bar(f, rows[0], app);
+
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -141,7 +148,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Constraint::Min(0),     // focused line trains
             Constraint::Length(30), // home arrivals
         ])
-        .split(inner);
+        .split(rows[1]);
 
     system_board(f, body[0], app, blink_on);
     train_panel(f, body[1], app, blink_on);
@@ -150,9 +157,79 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.show_alerts {
         alerts_overlay(f, inner, app);
     }
+    if app.show_ai {
+        ai_overlay(f, inner, app);
+    }
     if app.search.is_some() {
         search_overlay(f, inner, app, blink_on);
     }
+}
+
+fn epoch_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Full-width live AI dispatch line (NORAD status crawl), top row of the console.
+/// Dims + flags amber when the cached line is stale (daemon down / network out).
+fn dispatch_bar(f: &mut Frame, area: Rect, app: &App) {
+    let d = &app.ai.dispatch;
+    let empty = d.summary.trim().is_empty();
+    let stale = !empty && d.updated_at > 0 && (epoch_secs() - d.updated_at) > 180;
+    let text = if empty { "· awaiting AI dispatch …".to_string() } else { d.summary.clone() };
+    let avail = area.width.saturating_sub(11) as usize; // after the " ▎DISPATCH " tag
+    let line = Line::from(vec![
+        Span::styled(
+            " ▎DISPATCH ",
+            Style::default().fg(if stale { AMBER } else { GRID }).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(trunc(&text, avail), Style::default().fg(if empty || stale { DIM } else { PHOS })),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
+}
+
+/// Centered AI INTEL popup: the alerts SITREP + today's event advisory.
+fn ai_overlay(f: &mut Frame, body: Rect, app: &App) {
+    let w = 72.min(body.width.saturating_sub(2));
+    let h = 20.min(body.height.saturating_sub(2));
+    if w < 24 || h < 8 {
+        return;
+    }
+    let x = body.x + (body.width.saturating_sub(w)) / 2;
+    let y = body.y + (body.height.saturating_sub(h)) / 2;
+    let area = Rect { x, y, width: w, height: h };
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(GRID))
+        .title_top(Span::styled(" ◢ AI INTEL ", Style::default().fg(GRID).add_modifier(Modifier::BOLD)))
+        .title_bottom(Span::styled(" esc/i close ", Style::default().fg(DIM)));
+    let panel = block.inner(area);
+    f.render_widget(block, area);
+
+    let section = |title: &str, item: &crate::store::AiItem| -> Vec<Line<'static>> {
+        let empty = item.summary.trim().is_empty();
+        let head = if !empty && item.count > 0 {
+            format!("{title} · {} active", item.count)
+        } else {
+            title.to_string()
+        };
+        let body = if empty { "—".to_string() } else { item.summary.clone() };
+        vec![
+            Line::from(Span::styled(head, Style::default().fg(AMBER).add_modifier(Modifier::BOLD))),
+            Line::from(Span::styled(body, Style::default().fg(PHOS))),
+            Line::from(""),
+        ]
+    };
+    let mut lines: Vec<Line> = Vec::new();
+    lines.extend(section("SITREP", &app.ai.sitrep));
+    lines.extend(section("EVENT ADVISORY", &app.ai.events));
+
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), panel);
 }
 
 /// Centered popup listing active Customer Alerts for the focused line.

@@ -12,6 +12,7 @@ No Worker proxy needed (native app => no CORS); the API key lives in an env var.
 - **Per-branch maps** for Green Line (both Ashland/63rd and Cottage Grove termini shown stacked)
 - **Home station arrivals panel** with live ETAs and terminal destinations
 - **Service alerts overlay** (`a` key) — shows active Customer Alerts for the focused line
+- **AI dispatch + intel** (`i` key) — a live DeepSeek "DISPATCH" crawl across the top, plus an INTEL panel with the home-station alerts SITREP and today's event advisory (fed by a background SQLite-cached daemon; see [AI layer](#ai-layer))
 - **Approach notifier** — bell + flashing panel when a train is ≤ 6 minutes from your home station
 - **Desktop notifications** when a tracked train goes delayed (via native OS notifier)
 - **Fuzzy station search** (`/` key) — jump to any station across all 8 lines
@@ -104,13 +105,28 @@ universal via `lipo`; Linux/Windows via `cargo-zigbuild`/`cross` when installed)
 | `CTA_NOTIFY`     | `1`                              | desktop notification when a tracked train goes delayed (`0` disables) |
 | `CTA_NOTIFY_ICON`| `🚇`                             | emoji prefixed to the notification title; or an image path (uses `terminal-notifier -appIcon` if installed) |
 | `CTA_VERTICAL`   | `1`                              | start in vertical track orientation (`0` for horizontal); `v` toggles live |
+| `CTA_DB`         | `~/.cache/cta-tui/ai.db`         | local SQLite cache the AI daemon writes and the TUI reads |
+| `CTA_AI_BASE`    | (production worker)              | base URL the daemon polls for AI text |
+
+## AI layer
+
+A live **DISPATCH** crawl across the top of the console, plus an **INTEL** panel
+(`i` to toggle) with the alerts **SITREP** (scoped to your home station) and
+today's **EVENT ADVISORY** — all DeepSeek-generated, served by the companion
+Cloudflare Worker. A tiny background **daemon** polls those endpoints and caches
+the text in local SQLite (`CTA_DB`), so the TUI render loop never blocks on the
+network. The daemon is **auto-managed**: running `cta-tui` spawns it detached if
+it isn't already running. Run it standalone with `CTA_DAEMON=1 cta-tui` (no
+`CTA_KEY` needed — it only talks to the Worker). The dispatch tag flags amber
+when the cached line is stale (daemon down / network out).
 
 ## Debug modes (no terminal needed)
 
 ```sh
 CTA_PROBE=1  CTA_KEY=… cargo run    # one snapshot dumped to stdout (data check)
 CTA_RENDER=1 CTA_KEY=… cargo run    # draw one frame off-screen and print as text
-                                    #   CTA_COLS / CTA_ROWS size the buffer
+                                    #   CTA_COLS / CTA_ROWS size the buffer; CTA_INTEL=1 opens the AI panel
+CTA_DAEMON=1 cta-tui                # run only the AI cache daemon (no terminal)
 ```
 
 ## Layout

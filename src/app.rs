@@ -1,6 +1,7 @@
 //! UI-side application state.
 
 use crate::cta::Snapshot;
+use crate::store::AiState;
 use crate::track::TrackMap;
 use ratatui::style::Color;
 use std::collections::HashSet;
@@ -32,6 +33,9 @@ pub struct App {
     pub zoom: Option<Zoom>,
     pub show_alerts: bool,
     pub vertical: bool, // vertical track orientation
+    // AI layer (polled by the daemon into local SQLite, read here).
+    pub ai: AiState,
+    pub show_ai: bool, // intel panel (SITREP + event advisory) overlay
     // fio 3 — home-station approach notifier.
     pub alert_min: i64,           // threshold in minutes (0 disables)
     alerted: HashSet<String>,     // runs we've already alerted at the home station
@@ -60,6 +64,8 @@ impl App {
             zoom: None,
             show_alerts: false,
             vertical: false,
+            ai: AiState::default(),
+            show_ai: false,
             alert_min,
             alerted: HashSet::new(),
             started: false,
@@ -274,6 +280,15 @@ impl App {
 
     pub fn toggle_vertical(&mut self) {
         self.vertical = !self.vertical;
+    }
+
+    /// Latest AI text from the local cache (written by the daemon).
+    pub fn set_ai(&mut self, ai: AiState) {
+        self.ai = ai;
+    }
+
+    pub fn toggle_ai(&mut self) {
+        self.show_ai = !self.show_ai;
     }
 
     /// Active alerts impacting the given route key.
