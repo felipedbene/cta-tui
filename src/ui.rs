@@ -199,22 +199,23 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(inner);
     dispatch_bar(f, rows[0], app);
 
-    // Wide mode (multi-strip body) lands in stage 3; until then it shares the
-    // Normal horizontal body. Narrow drives the vertical strip.
-    let vertical = layout_mode(inner.width, app) == LayoutMode::Narrow;
-
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(24), // system board
-            Constraint::Min(0),     // focused line trains
-            Constraint::Length(30), // home arrivals
-        ])
-        .split(rows[1]);
-
-    system_board(f, body[0], app, blink_on);
-    train_panel(f, body[1], app, blink_on, vertical);
-    arrivals_panel(f, body[2], app, blink_on);
+    let mode = layout_mode(f.area().width, app); // terminal width, not post-border inner
+    if mode == LayoutMode::Wide {
+        draw_wide_body(f, rows[1], app, blink_on);
+    } else {
+        let vertical = mode == LayoutMode::Narrow;
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(24), // system board
+                Constraint::Min(0),     // focused line trains
+                Constraint::Length(30), // home arrivals
+            ])
+            .split(rows[1]);
+        system_board(f, body[0], app, blink_on);
+        train_panel(f, body[1], app, blink_on, vertical);
+        arrivals_panel(f, body[2], app, blink_on);
+    }
 
     if app.show_alerts {
         alerts_overlay(f, inner, app);
@@ -576,7 +577,7 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool, vertical: b
     // Vertical orientation: a full-height line diagram replaces the map+list.
     if vertical {
         if let Some(rt) = branches.first() {
-            draw_track_vertical(f, inner, app, rt, &branch_trains(app, branches, 0), color, blink_on);
+            draw_track_vertical(f, inner, app, rt, &branch_trains(app, branches, 0), color, blink_on, app.selected_run());
         }
         return;
     }
@@ -883,14 +884,13 @@ fn draw_track_zoom(f: &mut Frame, area: Rect, rt: &crate::track::RouteTrack, tra
 /// rail gutter and each train shown (▲/▼ + run) next to its nearest station.
 /// Suits tall/narrow terminals and shows full station names. Scrolls to keep
 /// the selected train in view. Uses the primary branch.
-fn draw_track_vertical(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::RouteTrack, trains: &[&crate::cta::Train], color: Color, blink_on: bool) {
+fn draw_track_vertical(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::RouteTrack, trains: &[&crate::cta::Train], color: Color, blink_on: bool, sel_run: Option<&str>) {
     let n = rt.stations.len();
     let h = area.height as usize;
     if n == 0 || h == 0 {
         return;
     }
     let home = app.home_label.to_lowercase();
-    let sel_run = app.selected_run();
 
     // Bucket each train onto its nearest station; remember the selected one's row.
     let mut at: Vec<Vec<Span>> = vec![Vec::new(); n];
@@ -959,6 +959,74 @@ fn draw_track_vertical(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::
         lines.push(Line::from(spans));
     }
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// Pick a contiguous window of `n` line indices that keeps `focused` in view.
+fn visible_window(focused: usize, n: usize, len: usize) -> Vec<usize> {
+    if len == 0 || n == 0 {
+        return Vec::new();
+    }
+    let n = n.min(len);
+    let mut start = focused.saturating_sub(n / 2);
+    if start + n > len {
+        start = len - n;
+    }
+    (start..start + n).collect()
+}
+
+/// One bordered vertical line strip (header + top→bottom diagram) for the wide
+/// multi-strip layout. Selection is highlighted only on the focused strip.
+fn render_line_strip(f: &mut Frame, area: Rect, app: &App, key: &str, focused: bool, blink_on: bool) {
+    let color = route_color(key);
+    let board = app.snap.boards.iter().find(|b| b.key == key);
+    let n_trains = board.map(|b| b.trains.len()).unwrap_or(0);
+    let label = board.map(|b| b.label.as_str()).unwrap_or(key);
+    let title = Line::from(vec![
+        Span::styled(
+            format!(" {} ", short_line(&format!("{label} Line"))),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("[{n_trains}] "), Style::default().fg(DIM)),
+    ]);
+    let block = panel_block(title, color, focused);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let branches = app.track.branches(key);
+    if let Some(rt) = branches.first() {
+        let trains = branch_trains(app, branches, 0);
+        let sel = if focused { app.selected_run() } else { None };
+        draw_track_vertical(f, inner, app, rt, &trains, color, blink_on, sel);
+    }
+}
+
+/// Wide layout: SYS board | N side-by-side vertical line strips | right rail.
+/// `←/→` (next_route/prev_route) scrolls the window of visible lines.
+fn draw_wide_body(f: &mut Frame, body: Rect, app: &App, blink_on: bool) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(24), // SYS board
+            Constraint::Min(0),     // center strips
+            Constraint::Length(30), // right rail (arrivals; stacked in stage 5)
+        ])
+        .split(body);
+    system_board(f, cols[0], app, blink_on);
+
+    let keys: Vec<&str> = app.snap.boards.iter().map(|b| b.key.as_str()).collect();
+    if !keys.is_empty() {
+        let min_cols = 26u16;
+        let n = ((cols[1].width / min_cols).max(1) as usize).min(keys.len());
+        let win = visible_window(app.focused, n, keys.len());
+        let slots = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![Constraint::Fill(1); n])
+            .split(cols[1]);
+        for (slot, &idx) in slots.iter().zip(win.iter()) {
+            render_line_strip(f, *slot, app, keys[idx], idx == app.focused, blink_on);
+        }
+    }
+
+    arrivals_panel(f, cols[2], app, blink_on);
 }
 
 fn draw_train_list(f: &mut Frame, area: Rect, trains: &[crate::cta::Train], selected: usize, color: Color, blink_on: bool) {
