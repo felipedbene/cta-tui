@@ -16,7 +16,7 @@ No Worker proxy needed (native app => no CORS); the API key lives in an env var.
 - **Approach notifier** — bell + flashing panel when a train is ≤ 6 minutes from your home station
 - **Desktop notifications** when a tracked train goes delayed (via native OS notifier)
 - **Fuzzy station search** (`/` key) — jump to any station across all 8 lines
-- **Vertical/horizontal orientation** (`v` key) — switch between track strip and column view
+- **Responsive layout** — adapts to terminal width: narrow → single vertical strip, mid → horizontal track map, wide → multiple side-by-side line strips + a stacked right rail + throughput sparklines; `v` cycles auto / vertical / horizontal
 - **NORAD aesthetics** — classification banner, rotating radar sweep `◜◝◞◟`, live clock, blinking status flags
 
 ```
@@ -136,13 +136,27 @@ CTA_DAEMON=1 cta-tui                # run only the AI cache daemon (no terminal)
 
 ## Layout
 
-- **left** — system board: the 8 'L' lines + live status (keyless `routes.aspx`).
-- **center** — focused line. A **track map** strip on top and the
-  train list under it: heading arrow, run #, ETA, DLY (amber) / APP (green)
-  flags, next stop, terminal dest. `←/→` cycles lines; `↑/↓` moves the train
-  cursor — the selected train is highlighted in the list and on the map, and
-  its run # shows in the panel title.
-- **right** — home-station arrivals ticker (`ttarrivals.aspx`).
+The layout **adapts to terminal width** (override with `v` → auto / vertical /
+horizontal, or set `CTA_VERTICAL`):
+
+- **Narrow** (`< 90` cols) — a single full-height vertical line strip.
+- **Normal** — the horizontal track-map view: SYSTEM board · focused-line map
+  strip + train list (heading arrow, run #, ETA, DLY/APP, next stop, dest) ·
+  home arrivals.
+- **Wide** (`≥ 140` cols) — the full console:
+  - **top rule** — telemetry: feed status · trains · lines up/total · poll
+    countdown · clock, with the live AI **DISPATCH** crawl beneath.
+  - **center** — N side-by-side vertical line strips (`←/→` scrolls the window,
+    the focused line bordered). Each station row is
+    `[inbound ▲ | station | ▼ outbound]` so direction reads at a glance; ◆ termini,
+    ◈ transfers, ★ home.
+  - **right rail** — selected-train detail · AI **SITREP** + event advisory
+    (`DEEPSEEK`) · home arrivals.
+  - **bottom** — per-line **throughput** sparklines (trains in service over recent
+    polls) and a **REPLAY** scrubber (stub).
+
+`←/→` cycles/scrolls lines; `↑/↓` moves the train cursor on the focused line
+(highlighted in its strip and the SEL detail panel).
 
 ## Track map — `src/track.rs` + `scripts/build_track.mjs`
 
