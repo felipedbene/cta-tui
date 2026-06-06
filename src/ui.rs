@@ -439,17 +439,20 @@ fn alerts_overlay(f: &mut Frame, body: Rect, app: &App) {
         .take(cap)
         .map(|a| {
             let sev = if a.major { RED } else { AMBER };
-            let head = Line::from(vec![
-                Span::styled("● ", Style::default().fg(sev)),
-                Span::styled(
-                    format!("[{}] ", trunc(&a.impact, 18)),
-                    Style::default().fg(sev).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    trunc(&a.headline, body_w.saturating_sub(24)),
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-                ),
-            ]);
+            // The impact tag is optional — Metra alerts often have no effect, so
+            // skip the brackets entirely rather than showing an empty "[]".
+            let mut head_spans = vec![Span::styled("● ", Style::default().fg(sev))];
+            let mut head_used = 2;
+            if !a.impact.is_empty() {
+                let tag = format!("[{}] ", trunc(&a.impact, 18));
+                head_used += tag.chars().count();
+                head_spans.push(Span::styled(tag, Style::default().fg(sev).add_modifier(Modifier::BOLD)));
+            }
+            head_spans.push(Span::styled(
+                trunc(&a.headline, body_w.saturating_sub(head_used + 2)),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            ));
+            let head = Line::from(head_spans);
             let desc = Line::from(Span::styled(
                 format!("  {}", trunc(&a.short, body_w.saturating_sub(3))),
                 Style::default().fg(DIM),
@@ -1555,18 +1558,19 @@ fn fmt_eta(eta_min: Option<i64>) -> String {
 /// "Red Line" -> "RED", "Purple Line Express" -> "PEXP".
 fn short_line(name: &str) -> String {
     match name.trim().to_lowercase().as_str() {
-        "red line" => "RED",
-        "blue line" => "BLUE",
-        "brown line" => "BRN",
-        "green line" => "GRN",
-        "orange line" => "ORG",
-        "purple line" => "PURP",
-        "purple line express" => "PEXP",
-        "pink line" => "PINK",
-        "yellow line" => "YEL",
-        other => other,
+        "red line" => "RED".into(),
+        "blue line" => "BLUE".into(),
+        "brown line" => "BRN".into(),
+        "green line" => "GRN".into(),
+        "orange line" => "ORG".into(),
+        "purple line" => "PURP".into(),
+        "purple line express" => "PEXP".into(),
+        "pink line" => "PINK".into(),
+        "yellow line" => "YEL".into(),
+        // Metra / South Shore (and any unknown route): show the key uppercased
+        // (e.g. "up-n" → "UP-N") rather than the lowercased match input.
+        other => other.to_uppercase(),
     }
-    .to_string()
 }
 
 /// A fixed-width row of styled cells. Markers are placed by column, then

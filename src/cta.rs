@@ -217,6 +217,49 @@ struct RawService {
     service_id: Option<String>,
 }
 
+// ---------- Metra / South Shore wire types (Worker JSON) ----------
+
+#[derive(Deserialize)]
+struct MetraResp {
+    #[serde(default)]
+    trains: Vec<MetraTrain>,
+}
+#[derive(Deserialize)]
+struct MetraTrain {
+    label: Option<String>, // train number, used as the run id
+    route: Option<String>, // Metra route id (BNSF, UP-N, ...)
+    lat: Option<f64>,
+    lon: Option<f64>,
+    heading: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct SsResp {
+    #[serde(default)]
+    trains: Vec<SsTrain>,
+}
+#[derive(Deserialize)]
+struct SsTrain {
+    label: Option<String>,
+    lat: Option<f64>,
+    lon: Option<f64>,
+    heading: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct MetraAlertsResp {
+    #[serde(default)]
+    alerts: Vec<MetraAlert>,
+}
+#[derive(Deserialize)]
+struct MetraAlert {
+    header: Option<String>,
+    description: Option<String>,
+    effect: Option<String>, // GTFS-rt effect enum name (e.g. SIGNIFICANT_DELAYS)
+    #[serde(default)]
+    routes: Vec<String>,
+}
+
 // ---------- Helpers ----------
 
 fn truthy(s: &Option<String>) -> bool {
@@ -240,15 +283,17 @@ fn eta_minutes(arr_t: &Option<String>) -> Option<i64> {
 pub struct Cta {
     http: reqwest::Client,
     key: String,
+    base: String, // Worker base URL for Metra/South Shore JSON (see ai::base())
+    metra: bool,  // include Metra + South Shore boards (CTA_METRA opt-out)
 }
 
 impl Cta {
-    pub fn new(key: String) -> Self {
+    pub fn new(key: String, base: String, metra: bool) -> Self {
         let http = reqwest::Client::builder()
             .user_agent("cta-tui/0.1 (+terminal)")
             .build()
             .expect("http client");
-        Self { http, key }
+        Self { http, key, base, metra }
     }
 
     /// Pull positions for the given routes, arrivals for the home station, and
@@ -277,7 +322,62 @@ impl Cta {
         if let Ok(a) = self.alerts(routes).await {
             snap.alerts = a;
         }
+
+        // Metra regional rail + NICTD South Shore, via the Worker's decoded JSON
+        // (the Metra token stays server-side). All non-fatal: a Worker hiccup
+        // must not blank the CTA board, so each failure just omits its lines.
+        if self.metra {
+            let metra_alerts = self.metra_alerts().await.unwrap_or_default();
+            if let Ok(boards) = self.metra_positions().await {
+                for b in &boards {
+                    snap.statuses.push(metra_status(&b.key, &metra_alerts));
+                }
+                snap.boards.extend(boards);
+            }
+            if let Ok(b) = self.southshore_positions().await {
+                snap.statuses.push(regional_status("SS", "ss", None));
+                snap.boards.push(b);
+            }
+            snap.alerts.extend(metra_alerts);
+        }
         snap
+    }
+
+    /// Metra vehicle positions (Worker JSON) → one board per Metra line, grouped
+    /// by `route` id. The feed carries no ETA/next-stop, so those stay empty; the
+    /// board shows the run/label, heading arrow, and strip-map position.
+    async fn metra_positions(&self) -> Result<Vec<RouteBoard>> {
+        let url = format!("{}/api/metra/positions", self.base);
+        let resp: MetraResp = self.http.get(url).send().await?.json().await?;
+        Ok(metra_boards(resp))
+    }
+
+    /// South Shore vehicle positions (Worker JSON). The realtime feed is
+    /// route-less, so every train lands in a single "ss" board.
+    async fn southshore_positions(&self) -> Result<RouteBoard> {
+        let url = format!("{}/api/southshore/positions", self.base);
+        let resp: SsResp = self.http.get(url).send().await?.json().await?;
+        Ok(ss_board(resp))
+    }
+
+    /// Active Metra service alerts (Worker JSON, decoded from GTFS-realtime).
+    /// Tagged with the lowercased route ids they impact so `App::alerts_for`
+    /// matches the Metra board keys.
+    async fn metra_alerts(&self) -> Result<Vec<Alert>> {
+        let url = format!("{}/api/metra/alerts", self.base);
+        let resp: MetraAlertsResp = self.http.get(url).send().await?.json().await?;
+        Ok(resp
+            .alerts
+            .into_iter()
+            .filter(|a| a.header.as_deref().is_some_and(|h| !h.is_empty()))
+            .map(|a| Alert {
+                routes: a.routes.iter().map(|r| r.to_lowercase()).collect(),
+                headline: a.header.unwrap_or_default(),
+                short: a.description.unwrap_or_default(),
+                impact: a.effect.map(pretty_effect).unwrap_or_default(),
+                major: false,
+            })
+            .collect())
     }
 
     async fn positions(&self, routes: &[&str]) -> Result<Vec<RouteBoard>> {
@@ -389,9 +489,123 @@ pub fn pretty_route(key: &str) -> String {
         "p" | "pexp" => "Purple",
         "pink" => "Pink",
         "y" => "Yellow",
+        // Metra regional rail + NICTD South Shore.
+        "bnsf" => "BNSF",
+        "hc" => "Heritage",
+        "md-n" => "MD-N",
+        "md-w" => "MD-W",
+        "me" => "Metra Electric",
+        "ncs" => "NCS",
+        "ri" => "Rock Island",
+        "sws" => "SW Service",
+        "up-n" => "UP-N",
+        "up-nw" => "UP-NW",
+        "up-w" => "UP-W",
+        "ss" => "South Shore",
         other => other,
     }
     .to_string()
+}
+
+/// Brand hex for a Metra/South Shore line (from the GTFS route colors baked into
+/// metra.geojson / southshore.geojson). Used to color the synthesized SYSTEM rows.
+pub fn regional_hex(key: &str) -> Option<&'static str> {
+    Some(match key.to_lowercase().as_str() {
+        "bnsf" => "#29C233",
+        "hc" => "#550E0C",
+        "md-n" => "#CC5500",
+        "md-w" => "#F1AD0E",
+        "me" => "#EB5C00",
+        "ncs" => "#9785BC",
+        "ri" => "#E02400",
+        "sws" => "#0042A8",
+        "up-n" => "#008000",
+        "up-nw" => "#FFE600",
+        "up-w" => "#FE8D81",
+        "ss" => "#F6931C",
+        _ => return None,
+    })
+}
+
+/// Group a Metra positions response into one board per route id (shared by the
+/// live fetch and historical replay decode).
+fn metra_boards(resp: MetraResp) -> Vec<RouteBoard> {
+    let mut by: std::collections::BTreeMap<String, Vec<Train>> = Default::default();
+    for t in resp.trains {
+        let Some(route) = t.route.filter(|r| !r.is_empty()) else { continue };
+        by.entry(route.to_lowercase()).or_default().push(regional_train(t.label, t.heading, t.lat, t.lon));
+    }
+    by.into_iter()
+        .map(|(key, trains)| RouteBoard { label: pretty_route(&key), key, trains })
+        .collect()
+}
+
+/// The single route-less South Shore board (shared by live fetch + replay decode).
+fn ss_board(resp: SsResp) -> RouteBoard {
+    let trains = resp
+        .trains
+        .into_iter()
+        .map(|t| regional_train(t.label, t.heading, t.lat, t.lon))
+        .collect();
+    RouteBoard { key: "ss".into(), label: pretty_route("ss"), trains }
+}
+
+/// Build one regional (Metra/SS) train. These feeds carry no ETA, next-stop, or
+/// rail-direction, so those default to empty; lat/lon/heading drive the strip map.
+fn regional_train(label: Option<String>, heading: Option<f64>, lat: Option<f64>, lon: Option<f64>) -> Train {
+    Train {
+        run: label.unwrap_or_default(),
+        dest: String::new(),
+        next_station: String::new(),
+        eta_min: None,
+        approaching: false,
+        delayed: false,
+        dir: None,
+        heading: heading.map(|h| h.round().rem_euclid(360.0) as u16),
+        lat,
+        lon,
+    }
+}
+
+/// Synthesize a SYSTEM-panel status row for a regional line. `display` is the
+/// short label (e.g. "UP-N"); `key` keys the brand color; `effect`, when present,
+/// flags the line as alerted so the panel shows it amber instead of nominal.
+fn regional_status(display: &str, key: &str, effect: Option<&str>) -> RouteStatus {
+    let status = match effect {
+        Some(e) if !e.is_empty() => e.to_string(),
+        _ => "Normal Service".to_string(), // "normal" → nominal styling in the SYSTEM panel
+    };
+    let status_color_hex = Some(if effect.is_some() { "#f9a825" } else { "#00b300" }.to_string());
+    RouteStatus {
+        route: display.to_string(),
+        status,
+        color_hex: regional_hex(key).map(String::from),
+        status_color_hex,
+    }
+}
+
+/// Status row for a Metra line, flagged by its most relevant active alert (if any).
+fn metra_status(key: &str, alerts: &[Alert]) -> RouteStatus {
+    let k = key.to_lowercase();
+    let effect = alerts
+        .iter()
+        .find(|a| a.routes.contains(&k))
+        .map(|a| if a.impact.is_empty() { "Alert" } else { a.impact.as_str() });
+    regional_status(&key.to_uppercase(), &k, effect)
+}
+
+/// GTFS-realtime effect enum name → human label ("SIGNIFICANT_DELAYS" → "Significant Delays").
+fn pretty_effect(e: String) -> String {
+    e.split('_')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // ---------- History / replay (Worker-backed) ----------
@@ -439,6 +653,12 @@ struct IndexResp {
 #[derive(Deserialize)]
 struct HistSnapResp {
     payload: PosResp,
+    // Captured into the same snapshot row by the Worker cron; null on pre-0007
+    // history rows (and absent from old deployments), so both are optional.
+    #[serde(default)]
+    metra: Option<MetraResp>,
+    #[serde(default)]
+    southshore: Option<SsResp>,
 }
 
 /// A historical snapshot decoded into renderable boards.
@@ -453,9 +673,20 @@ pub async fn history_index(http: &reqwest::Client, base: &str, from_ms: i64, to_
     Ok(r.frames)
 }
 
-/// Fetch one historical snapshot and decode its CTA payload into boards.
-pub async fn history_snapshot(http: &reqwest::Client, base: &str, id: i64) -> Result<HistSnap> {
+/// Fetch one historical snapshot and decode it into boards. When `metra` is set,
+/// the Metra + South Shore payloads captured in the same row are folded in too,
+/// so replay shows the same line set as the live view (otherwise they desync).
+pub async fn history_snapshot(http: &reqwest::Client, base: &str, id: i64, metra: bool) -> Result<HistSnap> {
     let url = format!("{base}/api/history/snapshot?id={id}");
     let r: HistSnapResp = http.get(url).send().await?.json().await?;
-    Ok(HistSnap { boards: boards_from_ctatt(r.payload.ctatt) })
+    let mut boards = boards_from_ctatt(r.payload.ctatt);
+    if metra {
+        if let Some(m) = r.metra {
+            boards.extend(metra_boards(m));
+        }
+        if let Some(s) = r.southshore {
+            boards.push(ss_board(s));
+        }
+    }
+    Ok(HistSnap { boards })
 }

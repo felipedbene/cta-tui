@@ -106,6 +106,62 @@ for (const route of Object.keys(branchPolys)) {
   });
 }
 
+// --- Metra + South Shore: merge regional rail into the same track map ---
+// Geometry comes from the Worker repo's metra/southshore geojson; stations from
+// the sidecars emitted by build_metra.mjs / build_southshore.mjs. Keys are
+// lowercased to match the live position feeds (route ids) and the TUI's
+// route_color/pretty_route lookups. South Shore's two corridors merge into one
+// "ss" route (branches), since its realtime feed carries no route_id.
+
+// Assign stations to branches: a station joins every branch within `nearDeg`,
+// and always at least its single nearest branch — so shared-trunk stops appear
+// on each branch and none are dropped when geometry is coarse.
+const branchesFromPolys = (polys, stns, nearDeg) => {
+  const sorted = [...polys].sort((a, b) => arcLen(b) - arcLen(a)); // primary (longest) first
+  const buckets = sorted.map(() => []);
+  for (const s of stns) {
+    let best = Infinity, bi = 0;
+    const dists = sorted.map((coords, i) => {
+      const d = distToPoly(s.lon, s.lat, coords);
+      if (d < best) { best = d; bi = i; }
+      return d;
+    });
+    let any = false;
+    for (let i = 0; i < sorted.length; i++) if (dists[i] <= nearDeg) { buckets[i].push(round(s)); any = true; }
+    if (!any) buckets[bi].push(round(s));
+  }
+  return sorted.map((coords, i) => ({
+    polyline: coords.map(([lon, lat]) => [+lon.toFixed(5), +lat.toFixed(5)]),
+    stations: buckets[i],
+  }));
+};
+
+const readJson = (p) => (fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, "utf8")) : null);
+
+// Metra: one geojson feature per shape (multiple per line) → branches; stations
+// keyed by route id in the sidecar. Coarser threshold than CTA: Metra spans far
+// and its simplified shapes sit farther from stops.
+const metraFc = readJson(path.join(WORKER, "public/metra.geojson"));
+const metraStations = readJson(path.join(WORKER, "public/metra_stations.json")) || {};
+if (metraFc) {
+  const metraPolys = {};
+  for (const f of metraFc.features) {
+    const r = f.properties.route.toLowerCase();
+    (metraPolys[r] ||= []).push(f.geometry.coordinates);
+  }
+  for (const r of Object.keys(metraPolys)) {
+    out[r] = branchesFromPolys(metraPolys[r], metraStations[r.toUpperCase()] || [], 0.003);
+  }
+}
+
+// South Shore: merge both corridors under "ss"; one flat station list assigned
+// to whichever corridor each stop is nearest.
+const ssFc = readJson(path.join(WORKER, "public/southshore.geojson"));
+const ssStations = readJson(path.join(WORKER, "public/southshore_stations.json")) || [];
+if (ssFc) {
+  out["ss"] = branchesFromPolys(ssFc.features.map((f) => f.geometry.coordinates), ssStations, 0.004);
+}
+
 const dest = path.resolve(process.cwd(), "src/track.json");
 fs.writeFileSync(dest, JSON.stringify(out));
 for (const r of Object.keys(out)) {

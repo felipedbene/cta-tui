@@ -6,6 +6,8 @@
 //!   CTA_HOME_MAPID home station map id (default: 41070 = Kedzie/Green)
 //!   CTA_HOME_NAME  label for the home panel (default: Kedzie)
 //!   CTA_REFRESH    seconds between polls (default: 30)
+//!   CTA_METRA      include Metra + South Shore lines (default: on; 0/false/off to disable)
+//!   CTA_AI_BASE    Worker base URL for Metra/SS + AI (default: production)
 
 mod ai;
 mod app;
@@ -47,10 +49,11 @@ fn fetch_replay_index(tx: mpsc::Sender<Msg>, http: reqwest::Client, base: String
     });
 }
 
-/// Fetch one historical snapshot by frame id and post it to the UI.
-fn fetch_replay_snapshot(tx: mpsc::Sender<Msg>, http: reqwest::Client, base: String, id: i64) {
+/// Fetch one historical snapshot by frame id and post it to the UI. `metra`
+/// mirrors the live view so replay shows the same line set.
+fn fetch_replay_snapshot(tx: mpsc::Sender<Msg>, http: reqwest::Client, base: String, id: i64, metra: bool) {
     tokio::spawn(async move {
-        if let Ok(hist) = cta::history_snapshot(&http, &base, id).await {
+        if let Ok(hist) = cta::history_snapshot(&http, &base, id, metra).await {
             let _ = tx.send(Msg::ReplaySnap(hist)).await;
         }
     });
@@ -106,10 +109,15 @@ async fn main() -> Result<()> {
     let orient_override: Option<bool> = std::env::var("CTA_VERTICAL")
         .ok()
         .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "off"));
+    // Metra + South Shore regional rail: on unless CTA_METRA is 0/false/off.
+    let metra_enabled = !matches!(
+        std::env::var("CTA_METRA").unwrap_or_default().to_lowercase().as_str(),
+        "0" | "false" | "off"
+    );
 
     // Headless probe: one snapshot to stdout, no terminal. `CTA_PROBE=1 cargo run`.
     if std::env::var("CTA_PROBE").is_ok() {
-        let cta = Cta::new(key);
+        let cta = Cta::new(key, ai::base(), metra_enabled);
         let refs: Vec<&str> = routes.iter().map(String::as_str).collect();
         let snap = cta.snapshot(&refs, &home_mapid).await;
         println!("updated   {}", snap.updated);
@@ -134,10 +142,11 @@ async fn main() -> Result<()> {
     // Render-dump: draw one real frame into an off-screen buffer and print it as
     // text, so the layout can be inspected without a TTY. `CTA_RENDER=1 cargo run`.
     if std::env::var("CTA_RENDER").is_ok() {
-        let cta = Cta::new(key);
+        let cta = Cta::new(key, ai::base(), metra_enabled);
         let refs: Vec<&str> = routes.iter().map(String::as_str).collect();
         let snap = cta.snapshot(&refs, &home_mapid).await;
         let mut app = App::new(home_name, alert_min, false); // no notifications in probe
+        app.metra = metra_enabled;
         app.apply(snap);
         // Load the AI cache so the dispatch bar / intel panel render off-screen too.
         if let Ok(conn) = store::open() {
@@ -158,7 +167,7 @@ async fn main() -> Result<()> {
             let now = chrono::Utc::now().timestamp_millis();
             if let Ok(frames) = cta::history_index(&http, &base, now - 6 * 3600 * 1000, now).await {
                 if let Some(id) = app.set_replay_frames(frames) {
-                    if let Ok(hist) = cta::history_snapshot(&http, &base, id).await {
+                    if let Ok(hist) = cta::history_snapshot(&http, &base, id, metra_enabled).await {
                         app.set_replay_snap(hist);
                     }
                 }
@@ -201,7 +210,7 @@ async fn main() -> Result<()> {
     let (refresh_tx, mut refresh_rx) = mpsc::channel::<()>(1);
     {
         let tx = tx.clone();
-        let cta = Cta::new(key);
+        let cta = Cta::new(key, ai::base(), metra_enabled);
         let route_refs: Vec<String> = routes.clone();
         let home_mapid = home_mapid.clone();
         tokio::spawn(async move {
@@ -262,7 +271,7 @@ async fn main() -> Result<()> {
     execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    let res = run(&mut terminal, &mut rx, tx.clone(), refresh_tx, home_name, alert_min, notify_enabled, orient_override, refresh).await;
+    let res = run(&mut terminal, &mut rx, tx.clone(), refresh_tx, home_name, alert_min, notify_enabled, orient_override, refresh, metra_enabled).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -280,10 +289,12 @@ async fn run<B: ratatui::backend::Backend>(
     notify_enabled: bool,
     orient_override: Option<bool>,
     refresh: u64,
+    metra_enabled: bool,
 ) -> Result<()> {
     let mut app = App::new(home_name, alert_min, notify_enabled);
     app.orient_override = orient_override;
     app.refresh_secs = refresh;
+    app.metra = metra_enabled;
     // Replay backend: a shared HTTP client + Worker base for history fetches.
     let http = reqwest::Client::new();
     let base = ai::base();
@@ -303,7 +314,7 @@ async fn run<B: ratatui::backend::Backend>(
                     Msg::Frames(frames) => {
                         // Index arrived → load the latest frame's snapshot.
                         if let Some(id) = app.set_replay_frames(frames) {
-                            fetch_replay_snapshot(tx.clone(), http.clone(), base.clone(), id);
+                            fetch_replay_snapshot(tx.clone(), http.clone(), base.clone(), id, app.metra);
                         }
                     }
                     Msg::ReplaySnap(hist) => app.set_replay_snap(hist),
@@ -370,14 +381,14 @@ async fn run<B: ratatui::backend::Backend>(
                                 KeyCode::Right | KeyCode::Tab => {
                                     if app.is_replaying() {
                                         if let Some(id) = app.replay_scrub(1) {
-                                            fetch_replay_snapshot(tx.clone(), http.clone(), base.clone(), id);
+                                            fetch_replay_snapshot(tx.clone(), http.clone(), base.clone(), id, app.metra);
                                         }
                                     } else { app.clear_zoom(); app.next_route(); }
                                 }
                                 KeyCode::Left => {
                                     if app.is_replaying() {
                                         if let Some(id) = app.replay_scrub(-1) {
-                                            fetch_replay_snapshot(tx.clone(), http.clone(), base.clone(), id);
+                                            fetch_replay_snapshot(tx.clone(), http.clone(), base.clone(), id, app.metra);
                                         }
                                     } else { app.clear_zoom(); app.prev_route(); }
                                 }

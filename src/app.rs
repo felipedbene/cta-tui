@@ -43,6 +43,7 @@ pub struct App {
     pub zoom: Option<Zoom>,
     pub show_alerts: bool,
     pub orient_override: Option<bool>, // None = auto by width; Some = forced (v / CTA_VERTICAL)
+    pub metra: bool,                   // include Metra/SS (mirrors the live fetch in replay decode)
     // Stage 7b — historical replay (Worker-backed). `live_snap` parks the live
     // feed while a frozen frame is on screen in `snap`.
     pub replay: Option<Replay>,
@@ -89,6 +90,7 @@ impl App {
             zoom: None,
             show_alerts: false,
             orient_override: None,
+            metra: true,
             replay: None,
             live_snap: None,
             ai: AiState::default(),
@@ -607,6 +609,19 @@ pub fn route_color(key: &str) -> Color {
         "p" | "pexp" => Color::Rgb(0x52, 0x2c, 0xa8),
         "pink" => Color::Rgb(0xe2, 0x7e, 0xa6),
         "y" => Color::Rgb(0xf9, 0xe3, 0x00),
+        // Metra regional rail + NICTD South Shore (GTFS brand colors).
+        "bnsf" => Color::Rgb(0x29, 0xc2, 0x33),
+        "hc" => Color::Rgb(0x55, 0x0e, 0x0c),
+        "md-n" => Color::Rgb(0xcc, 0x55, 0x00),
+        "md-w" => Color::Rgb(0xf1, 0xad, 0x0e),
+        "me" => Color::Rgb(0xeb, 0x5c, 0x00),
+        "ncs" => Color::Rgb(0x97, 0x85, 0xbc),
+        "ri" => Color::Rgb(0xe0, 0x24, 0x00),
+        "sws" => Color::Rgb(0x00, 0x42, 0xa8),
+        "up-n" => Color::Rgb(0x00, 0x80, 0x00),
+        "up-nw" => Color::Rgb(0xff, 0xe6, 0x00),
+        "up-w" => Color::Rgb(0xfe, 0x8d, 0x81),
+        "ss" => Color::Rgb(0xf6, 0x93, 0x1c),
         _ => Color::Gray,
     }
 }
