@@ -12,7 +12,7 @@ No Worker proxy needed (native app => no CORS); the API key lives in an env var.
 - **Per-branch maps** for Green Line (both Ashland/63rd and Cottage Grove termini shown stacked)
 - **Home station arrivals panel** with live ETAs and terminal destinations
 - **Service alerts overlay** (`a` key) — shows active Customer Alerts for the focused line
-- **AI dispatch + intel** (`i` key) — a live DeepSeek "DISPATCH" crawl across the top, plus an INTEL panel with the home-station alerts SITREP and today's event advisory (fed by a background SQLite-cached daemon; see [AI layer](#ai-layer))
+- **AI dispatch + intel** (`i` key) — a live DeepSeek "DISPATCH" crawl across the top, plus an INTEL panel with the home-station alerts SITREP and today's event advisory; optional **voice narration** (`s` key) via the OS speech command. Fed by a background SQLite-cached daemon — see [AI layer](#ai-layer)
 - **Approach notifier** — bell + flashing panel when a train is ≤ 6 minutes from your home station
 - **Desktop notifications** when a tracked train goes delayed (via native OS notifier)
 - **Fuzzy station search** (`/` key) — jump to any station across all 8 lines
@@ -119,6 +119,11 @@ network. The daemon is **auto-managed**: running `cta-tui` spawns it detached if
 it isn't already running. Run it standalone with `CTA_DAEMON=1 cta-tui` (no
 `CTA_KEY` needed — it only talks to the Worker). The dispatch tag flags amber
 when the cached line is stale (daemon down / network out).
+
+**Voice** (`s`): speaks the dispatch line aloud whenever it changes, and reads
+the SITREP + advisory when you open the intel panel — via the OS speech command
+(macOS `say`, Linux `spd-say`/`espeak`; no-op elsewhere), no extra crate. The
+🔊 marker on the DISPATCH tag shows when it's on.
 
 ## Debug modes (no terminal needed)
 

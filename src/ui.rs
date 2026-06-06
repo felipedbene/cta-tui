@@ -104,7 +104,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     .right_aligned();
 
     let mut legend_spans = Vec::new();
-    for (k, label) in [("/", "FIND"), ("a", "ALERTS"), ("i", "INTEL"), ("v", "VERT"), ("q", "QUIT"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
+    for (k, label) in [("/", "FIND"), ("a", "ALERTS"), ("i", "INTEL"), ("s", "SPEAK"), ("v", "VERT"), ("q", "QUIT"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
         legend_spans.extend(key(k, label));
     }
     let legend = Line::from(legend_spans);
@@ -179,12 +179,10 @@ fn dispatch_bar(f: &mut Frame, area: Rect, app: &App) {
     let empty = d.summary.trim().is_empty();
     let stale = !empty && d.updated_at > 0 && (epoch_secs() - d.updated_at) > 180;
     let text = if empty { "· awaiting AI dispatch …".to_string() } else { d.summary.clone() };
-    let avail = area.width.saturating_sub(11) as usize; // after the " ▎DISPATCH " tag
+    let tag = if app.voice { " 🔊 DISPATCH " } else { " ▎DISPATCH " }; // 🔊 = voice on
+    let avail = area.width.saturating_sub(tag.chars().count() as u16 + 2) as usize;
     let line = Line::from(vec![
-        Span::styled(
-            " ▎DISPATCH ",
-            Style::default().fg(if stale { AMBER } else { GRID }).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(tag, Style::default().fg(if stale { AMBER } else { GRID }).add_modifier(Modifier::BOLD)),
         Span::styled(trunc(&text, avail), Style::default().fg(if empty || stale { DIM } else { PHOS })),
     ]);
     f.render_widget(Paragraph::new(line), area);

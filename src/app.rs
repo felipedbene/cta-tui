@@ -36,6 +36,9 @@ pub struct App {
     // AI layer (polled by the daemon into local SQLite, read here).
     pub ai: AiState,
     pub show_ai: bool, // intel panel (SITREP + event advisory) overlay
+    pub voice: bool,               // speak AI text via the OS TTS command
+    last_spoken: String,           // last dispatch line spoken (dedupe)
+    pending_speak: Option<String>, // utterance queued for main → tts::speak
     // fio 3 — home-station approach notifier.
     pub alert_min: i64,           // threshold in minutes (0 disables)
     alerted: HashSet<String>,     // runs we've already alerted at the home station
@@ -66,6 +69,9 @@ impl App {
             vertical: false,
             ai: AiState::default(),
             show_ai: false,
+            voice: false,
+            last_spoken: String::new(),
+            pending_speak: None,
             alert_min,
             alerted: HashSet::new(),
             started: false,
@@ -282,13 +288,59 @@ impl App {
         self.vertical = !self.vertical;
     }
 
-    /// Latest AI text from the local cache (written by the daemon).
+    /// Latest AI text from the local cache (written by the daemon). Queues the
+    /// dispatch line to be spoken when it changes and voice is on.
     pub fn set_ai(&mut self, ai: AiState) {
         self.ai = ai;
+        if self.voice {
+            let d = self.ai.dispatch.summary.trim();
+            if !d.is_empty() && d != self.last_spoken {
+                self.last_spoken = d.to_string();
+                self.pending_speak = Some(d.to_string());
+            }
+        }
     }
 
     pub fn toggle_ai(&mut self) {
         self.show_ai = !self.show_ai;
+        if self.show_ai {
+            self.speak_intel(); // read the SITREP + advisory aloud (voice only)
+        }
+    }
+
+    pub fn toggle_voice(&mut self) {
+        self.voice = !self.voice;
+        if self.voice {
+            let d = self.ai.dispatch.summary.trim();
+            if !d.is_empty() {
+                self.last_spoken = d.to_string();
+                self.pending_speak = Some(d.to_string()); // read current line on enable
+            }
+        }
+    }
+
+    /// Queue the SITREP + event advisory to be spoken (no-op unless voice is on).
+    fn speak_intel(&mut self) {
+        if !self.voice {
+            return;
+        }
+        let mut parts = Vec::new();
+        let s = self.ai.sitrep.summary.trim();
+        if !s.is_empty() {
+            parts.push(format!("Sitrep. {s}"));
+        }
+        let e = self.ai.events.summary.trim();
+        if !e.is_empty() {
+            parts.push(format!("Event advisory. {e}"));
+        }
+        if !parts.is_empty() {
+            self.pending_speak = Some(parts.join(" "));
+        }
+    }
+
+    /// Drain a queued utterance (consumed by main → tts::speak).
+    pub fn take_speak(&mut self) -> Option<String> {
+        self.pending_speak.take()
     }
 
     /// Active alerts impacting the given route key.

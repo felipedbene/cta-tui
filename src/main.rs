@@ -13,6 +13,7 @@ mod cta;
 mod notify;
 mod store;
 mod track;
+mod tts;
 mod ui;
 
 use anyhow::Result;
@@ -296,6 +297,7 @@ async fn run<B: ratatui::backend::Backend>(
                                 KeyCode::Char('/') => app.open_search(),
                                 KeyCode::Char('a') => app.toggle_alerts(),
                                 KeyCode::Char('i') => app.toggle_ai(),
+                                KeyCode::Char('s') => app.toggle_voice(),
                                 KeyCode::Char('v') => app.toggle_vertical(),
                                 KeyCode::Char('r') => { let _ = refresh_tx.try_send(()); app.loading = true; }
                                 KeyCode::Right | KeyCode::Tab => { app.clear_zoom(); app.next_route(); }
@@ -308,6 +310,9 @@ async fn run<B: ratatui::backend::Backend>(
                     }
                 }
             }
+        }
+        if let Some(text) = app.take_speak() {
+            tts::speak(&text);
         }
         if app.should_quit {
             break;
