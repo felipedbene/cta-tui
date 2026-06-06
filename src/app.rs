@@ -6,6 +6,10 @@ use crate::track::TrackMap;
 use ratatui::style::Color;
 use std::collections::{HashMap, HashSet, VecDeque};
 
+/// Resolution of the per-route phosphor persistence buffer — fixed bins across
+/// the rail (in `pos_to_slot` space) so it's independent of the render width.
+pub const PHOS_BINS: usize = 128;
+
 /// Active station fuzzy-search overlay.
 pub struct Search {
     pub query: String,
@@ -54,6 +58,9 @@ pub struct App {
     pub refresh_secs: u64,         // CTA_REFRESH; set by main after construction
     polled_at_frame: u64,          // app.frame at the last apply() (for the countdown)
     pub route_hist: HashMap<String, VecDeque<u16>>, // per-route train counts (throughput sparklines)
+    // Radar persistence: per-route rail intensity (PHOS_BINS slots), decayed each
+    // tick and re-stamped at live train positions → fading comet-tails.
+    phosphor: HashMap<String, Vec<f32>>,
     // fio 3 — home-station approach notifier.
     pub alert_min: i64,           // threshold in minutes (0 disables)
     alerted: HashSet<String>,     // runs we've already alerted at the home station
@@ -93,6 +100,7 @@ impl App {
             refresh_secs: 30,
             polled_at_frame: 0,
             route_hist: HashMap::new(),
+            phosphor: HashMap::new(),
             alert_min,
             alerted: HashSet::new(),
             started: false,
@@ -108,6 +116,42 @@ impl App {
     pub fn tick(&mut self) {
         self.frame = self.frame.wrapping_add(1);
         self.flash = self.flash.saturating_sub(1);
+        self.update_phosphor();
+    }
+
+    /// Radar persistence. Decay every rail's per-column intensity, then re-stamp
+    /// the current train positions back to full. A train holds its own cell hot
+    /// while it sits there; when it moves (next poll) the vacated cells fade,
+    /// leaving a comet-tail down the rail.
+    fn update_phosphor(&mut self) {
+        const DECAY: f32 = 0.82;
+        for b in &self.snap.boards {
+            let buf = self
+                .phosphor
+                .entry(b.key.clone())
+                .or_insert_with(|| vec![0.0; PHOS_BINS]);
+            for v in buf.iter_mut() {
+                *v *= DECAY;
+            }
+            // Stamp on the primary branch — the rail the horizontal map draws.
+            let Some(rt) = self.track.branches(&b.key).first() else {
+                continue;
+            };
+            for t in &b.trains {
+                let (Some(lat), Some(lon)) = (t.lat, t.lon) else {
+                    continue;
+                };
+                let Some(pj) = rt.project(lat, lon) else { continue };
+                let slot = rt.pos_to_slot(pj.pos01).clamp(0.0, 1.0);
+                let bin = ((slot * (PHOS_BINS - 1) as f64).round() as usize).min(PHOS_BINS - 1);
+                buf[bin] = 1.0;
+            }
+        }
+    }
+
+    /// Per-route phosphor residual (PHOS_BINS slots in `pos_to_slot` space).
+    pub fn phosphor_for(&self, key: &str) -> Option<&[f32]> {
+        self.phosphor.get(key).map(|v| v.as_slice())
     }
 
     /// Consume a queued bell (rung once when a train newly comes within range).

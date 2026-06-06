@@ -1,6 +1,6 @@
 //! CTA Track Grid — terminal edition.
 //!
-//! Env:
+//! Env (also read from a gitignored `.env` at the repo root, if present):
 //!   CTA_KEY        Train Tracker API key (required)
 //!   CTA_ROUTES     comma routes (default: red,blue,brn,g,org,p,pink,y)
 //!   CTA_HOME_MAPID home station map id (default: 41070 = Kedzie/Green)
@@ -58,6 +58,10 @@ fn fetch_replay_snapshot(tx: mpsc::Sender<Msg>, http: reqwest::Client, base: Str
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load a local .env (gitignored) if present, so CTA_KEY and friends can live
+    // in a file instead of the shell. Real environment vars still win.
+    let _ = dotenvy::dotenv();
+
     // Background daemon: poll the Worker's AI endpoints into the local SQLite
     // cache. No terminal, no CTA_KEY needed.  `CTA_DAEMON=1 cta-tui`
     if std::env::var("CTA_DAEMON").is_ok() {

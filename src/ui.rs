@@ -11,7 +11,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Sparkline, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 
@@ -73,6 +73,25 @@ fn scale(c: Color, f: f64) -> Color {
     }
 }
 
+/// Linear blend between two RGB colors (`f`: 0 → `a`, 1 → `b`). The missing half
+/// of the `scale()` pair — used for throughput gradients and intensity tints.
+fn lerp(a: Color, b: Color, f: f64) -> Color {
+    let f = f.clamp(0.0, 1.0);
+    let mix = |x: u8, y: u8| (x as f64 + (y as f64 - x as f64) * f) as u8;
+    match (a, b) {
+        (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
+            Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
+        }
+        _ => if f < 0.5 { a } else { b },
+    }
+}
+
+/// 0..1 smooth pulse off the frame tick (~one breath per ~3s at 4 fps). Reads as
+/// a live CRT rather than a hard annunciator blink.
+fn pulse(frame: u64) -> f64 {
+    (frame as f64 * 0.13).sin() * 0.5 + 0.5
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum LayoutMode {
     Narrow, // < ~90 cols → single vertical strip
@@ -104,15 +123,18 @@ pub fn draw(f: &mut Frame, app: &App) {
     let n_trains: usize = app.snap.boards.iter().map(|b| b.trains.len()).sum();
     let n_lines = app.snap.boards.len();
 
+    // Breathe the alarm tags instead of blanking them — same footprint each
+    // frame (no width jitter), reads as a live CRT not a relay.
+    let breath = 0.4 + 0.6 * pulse(app.frame);
     let scan = if app.loading {
         Span::styled(
-            if blink_on { " ACQUIRING " } else { "           " },
-            Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+            " ACQUIRING ",
+            Style::default().fg(scale(AMBER, breath)).add_modifier(Modifier::BOLD),
         )
     } else if app.snap.error.is_some() {
         Span::styled(
-            if blink_on { " LINK FAULT " } else { "            " },
-            Style::default().fg(RED).add_modifier(Modifier::BOLD),
+            " LINK FAULT ",
+            Style::default().fg(scale(RED, breath)).add_modifier(Modifier::BOLD),
         )
     } else {
         Span::styled(
@@ -161,8 +183,13 @@ pub fn draw(f: &mut Frame, app: &App) {
     } else {
         ("FEED FAULT", AMBER)
     };
-    // Pulse the dot while replaying or faulted.
-    let dot_col = if (!feed_ok || replaying) && !blink_on { scale(feed_col, 0.3) } else { feed_col };
+    // Breathe the dot: a gentle live pulse when nominal, a stronger alarm pulse
+    // while replaying or faulted.
+    let dot_col = if !feed_ok || replaying {
+        scale(feed_col, 0.3 + 0.7 * pulse(app.frame))
+    } else {
+        scale(feed_col, 0.7 + 0.3 * pulse(app.frame))
+    };
     let sep = || Span::styled(" · ", Style::default().fg(DIM));
     let dim = |s: &'static str| Span::styled(s, Style::default().fg(DIM));
     let val = |s: String| Span::styled(s, Style::default().fg(GRID));
@@ -643,10 +670,12 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool, vertical: b
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    let residual = app.phosphor_for(&key);
+
     // Vertical orientation: a full-height line diagram replaces the map+list.
     if vertical {
         if let Some(rt) = branches.first() {
-            draw_track_vertical(f, inner, app, rt, &branch_trains(app, branches, 0), color, blink_on, app.selected_run());
+            draw_track_vertical(f, inner, app, rt, &branch_trains(app, branches, 0), color, blink_on, app.selected_run(), residual);
         }
         return;
     }
@@ -678,10 +707,10 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool, vertical: b
                 .constraints([Constraint::Length(6), Constraint::Length(6)])
                 .split(split[0]);
             for (b, rt) in branches.iter().enumerate().take(2) {
-                draw_track_full(f, halves[b], app, rt, &branch_trains(app, branches, b), color, blink_on);
+                draw_track_full(f, halves[b], app, rt, &branch_trains(app, branches, b), color, blink_on, residual);
             }
         } else if let Some(rt) = branches.first() {
-            draw_track_full(f, split[0], app, rt, &branch_trains(app, branches, 0), color, blink_on);
+            draw_track_full(f, split[0], app, rt, &branch_trains(app, branches, 0), color, blink_on, residual);
         } else {
             f.render_widget(
                 Paragraph::new(Span::styled(" no map data", Style::default().fg(DIM))),
@@ -689,7 +718,7 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool, vertical: b
             );
         }
     }
-    draw_train_list(f, split[1], trains, app.selected, color, blink_on);
+    draw_train_list(f, split[1], trains, app.selected, color, blink_on, app.frame);
 }
 
 /// Trains assigned to branch `b`: each train goes to the branch whose rail it's
@@ -719,7 +748,7 @@ fn branch_trains<'a>(app: &'a App, branches: &[crate::track::RouteTrack], b: usi
 /// fio 4 — the ASCII track map: a straight rail with station ticks, the home
 /// station starred, and live trains projected onto it (inbound above the rail,
 /// outbound below). Conveys at a glance where every train on the line is.
-fn draw_track_full(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::RouteTrack, trains: &[&crate::cta::Train], color: Color, blink_on: bool) {
+fn draw_track_full(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::RouteTrack, trains: &[&crate::cta::Train], color: Color, blink_on: bool, residual: Option<&[f32]>) {
     let w = area.width as usize;
     if w < 8 {
         return;
@@ -736,6 +765,19 @@ fn draw_track_full(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::Rout
     // home. Priority keeps the star/terminus from being clobbered when stations
     // crowd the same column.
     let mut rail = RowBuf::new(w, '━', Style::default().fg(scale(color, 0.45)));
+    // Phosphor persistence: brighten each rail cell by its residual intensity so
+    // trains drag a fading comet-tail down the rail as they move between polls.
+    if let Some(res) = residual {
+        for x in 0..w {
+            let slot = if w > 1 { x as f64 / (w - 1) as f64 } else { 0.0 };
+            let bin = ((slot * (crate::app::PHOS_BINS - 1) as f64).round() as usize)
+                .min(crate::app::PHOS_BINS - 1);
+            let r = res.get(bin).copied().unwrap_or(0.0) as f64;
+            if r > 0.02 {
+                rail.put(x, '━', Style::default().fg(scale(color, 0.45 + 0.5 * r)));
+            }
+        }
+    }
     let mut home_col: Option<usize> = None;
     for (i, s) in rt.stations.iter().enumerate() {
         let x = xof_station(i);
@@ -778,7 +820,8 @@ fn draw_track_full(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::Rout
             }
             (Style::default().fg(AMBER).add_modifier(Modifier::BOLD), 3)
         } else if t.approaching {
-            (Style::default().fg(PHOS).add_modifier(Modifier::BOLD), 2)
+            // Breathe the approaching glyph so APP trains read as live, not lit.
+            (Style::default().fg(scale(PHOS, 0.55 + 0.45 * pulse(app.frame))).add_modifier(Modifier::BOLD), 2)
         } else {
             (Style::default().fg(color).add_modifier(Modifier::BOLD), 1)
         };
@@ -797,6 +840,17 @@ fn draw_track_full(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::Rout
             (false, false) => '◂',
         };
         let row = if forward { &mut up } else { &mut dn };
+        // Bloom shoulders for the hot glyphs (selected / approaching): faint
+        // phosphor in the flanking cells at priority 0, so they only ever sit on
+        // empty rail and never mask a real neighboring train. Bright center, dim
+        // shoulders — that's the bloom.
+        if sel || t.approaching {
+            let halo = Style::default().fg(scale(PHOS, 0.35));
+            if x > 0 {
+                row.put_prio(x - 1, '∙', halo, 0);
+            }
+            row.put_prio(x + 1, '∙', halo, 0);
+        }
         row.put_prio(x, glyph, style, prio);
     }
 
@@ -953,7 +1007,7 @@ fn draw_track_zoom(f: &mut Frame, area: Rect, rt: &crate::track::RouteTrack, tra
 /// rail gutter and each train shown (▲/▼ + run) next to its nearest station.
 /// Suits tall/narrow terminals and shows full station names. Scrolls to keep
 /// the selected train in view. Uses the primary branch.
-fn draw_track_vertical(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::RouteTrack, trains: &[&crate::cta::Train], color: Color, blink_on: bool, sel_run: Option<&str>) {
+fn draw_track_vertical(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::RouteTrack, trains: &[&crate::cta::Train], color: Color, blink_on: bool, sel_run: Option<&str>, residual: Option<&[f32]>) {
     let n = rt.stations.len();
     let h = area.height as usize;
     if n == 0 || h == 0 {
@@ -1024,7 +1078,19 @@ fn draw_track_vertical(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::
         } else if is_landmark(&s.name) {
             ('◈', Style::default().fg(color).add_modifier(Modifier::BOLD), Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
         } else {
-            ('┿', Style::default().fg(color), Style::default().fg(Color::White))
+            // Phosphor persistence: rest the spine dim, brighten it by the
+            // residual intensity at this station so a passing train leaves a
+            // fading trail down the rail.
+            let r = residual
+                .map(|res| {
+                    let last = n.saturating_sub(1).max(1);
+                    let slot = i as f64 / last as f64;
+                    let bin = ((slot * (crate::app::PHOS_BINS - 1) as f64).round() as usize)
+                        .min(crate::app::PHOS_BINS - 1);
+                    res.get(bin).copied().unwrap_or(0.0) as f64
+                })
+                .unwrap_or(0.0);
+            ('┿', Style::default().fg(scale(color, 0.55 + 0.45 * r)), Style::default().fg(Color::White))
         };
         let mut spans: Vec<Span> = Vec::new();
         // inbound gutter — right-aligned against the spine
@@ -1080,7 +1146,7 @@ fn render_line_strip(f: &mut Frame, area: Rect, app: &App, key: &str, focused: b
     if let Some(rt) = branches.first() {
         let trains = branch_trains(app, branches, 0);
         let sel = if focused { app.selected_run() } else { None };
-        draw_track_vertical(f, inner, app, rt, &trains, color, blink_on, sel);
+        draw_track_vertical(f, inner, app, rt, &trains, color, blink_on, sel, app.phosphor_for(key));
     }
 }
 
@@ -1160,13 +1226,38 @@ fn throughput_panel(f: &mut Frame, area: Rect, app: &App, vis: &[&str]) {
             Paragraph::new(Span::styled(format!("{:<4}", short_line(&format!("{label} Line"))), Style::default().fg(color))),
             cells[0],
         );
-        let data: Vec<u64> = app
+        let data: Vec<u16> = app
             .route_hist
             .get(key)
-            .map(|q| q.iter().map(|&v| v as u64).collect())
+            .map(|q| q.iter().copied().collect())
             .unwrap_or_default();
-        f.render_widget(Sparkline::default().data(&data).style(Style::default().fg(color)), cells[1]);
+        f.render_widget(Paragraph::new(gradient_bars(&data, cells[1].width as usize, color)), cells[1]);
     }
+}
+
+/// Hand-rolled gradient sparkline: block glyphs ▁..█ sized by value, each cell
+/// colored by `lerp(dim → brand, value/max)`. Replaces ratatui's flat
+/// single-color `Sparkline`. Shows the most recent `w` samples (newest right).
+fn gradient_bars(data: &[u16], w: usize, color: Color) -> Line<'static> {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    if w == 0 {
+        return Line::default();
+    }
+    let n = data.len();
+    let slice = if n > w { &data[n - w..] } else { data };
+    let max = slice.iter().copied().max().unwrap_or(0).max(1) as f64;
+    let dim = scale(color, 0.3);
+    let mut spans = Vec::with_capacity(slice.len());
+    for &v in slice {
+        if v == 0 {
+            spans.push(Span::raw(" "));
+            continue;
+        }
+        let frac = (v as f64 / max).clamp(0.0, 1.0);
+        let level = ((frac * 7.0).round() as usize).min(7);
+        spans.push(Span::styled(BARS[level].to_string(), Style::default().fg(lerp(dim, color, frac))));
+    }
+    Line::from(spans)
 }
 
 /// REPLAY scrubber. When live, prompts to press `p`; while replaying, shows the
@@ -1317,7 +1408,7 @@ fn ai_rail(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
-fn draw_train_list(f: &mut Frame, area: Rect, trains: &[crate::cta::Train], selected: usize, color: Color, blink_on: bool) {
+fn draw_train_list(f: &mut Frame, area: Rect, trains: &[crate::cta::Train], selected: usize, color: Color, blink_on: bool, frame: u64) {
     // Auto-scroll so the selected train stays visible in the window.
     let visible = area.height as usize;
     let scroll = if visible > 0 && selected >= visible {
@@ -1337,7 +1428,8 @@ fn draw_train_list(f: &mut Frame, area: Rect, trains: &[crate::cta::Train], sele
             };
             (s, "DLY")
         } else if t.approaching {
-            (Style::default().fg(GRID).add_modifier(Modifier::BOLD), "APP")
+            // Breathe APP so it reads as live, matching the map's glyph pulse.
+            (Style::default().fg(scale(GRID, 0.6 + 0.4 * pulse(frame))).add_modifier(Modifier::BOLD), "APP")
         } else {
             (Style::default().fg(Color::White), "")
         };
