@@ -892,8 +892,13 @@ fn draw_track_vertical(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::
     }
     let home = app.home_label.to_lowercase();
 
-    // Bucket each train onto its nearest station; remember the selected one's row.
-    let mut at: Vec<Vec<Span>> = vec![Vec::new(); n];
+    // Bucket each train onto its nearest station, split by direction: inbound
+    // (toward the top terminus) → left gutter ▲, outbound → right gutter ▼. Keep
+    // one marker per side per station (prefer the selected train); remember the
+    // selected one's row for scrolling.
+    let gutter_w = 6usize;
+    let mut left: Vec<Option<Span>> = vec![None; n]; // inbound ▲
+    let mut right: Vec<Option<Span>> = vec![None; n]; // outbound ▼
     let mut sel_station: Option<usize> = None;
     for &t in trains {
         let (Some(lat), Some(lon)) = (t.lat, t.lon) else { continue };
@@ -910,22 +915,24 @@ fn draw_track_vertical(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::
         if sel {
             sel_station = Some(i);
         }
+        if t.delayed && !blink_on && !sel {
+            continue; // delayed markers blink
+        }
         let style = if sel {
             Style::default().fg(Color::Black).bg(PHOS).add_modifier(Modifier::BOLD)
         } else if t.delayed {
-            if !blink_on {
-                continue;
-            }
             Style::default().fg(AMBER).add_modifier(Modifier::BOLD)
         } else if t.approaching {
             Style::default().fg(PHOS).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(color).add_modifier(Modifier::BOLD)
         };
-        at[i].push(Span::styled(
-            format!(" {}#{}", if forward { '▼' } else { '▲' }, t.run),
-            style,
-        ));
+        let arrow = if forward { '▼' } else { '▲' };
+        let marker = Span::styled(format!("{arrow}{}", t.run), style);
+        let slot = if forward { &mut right[i] } else { &mut left[i] };
+        if slot.is_none() || sel {
+            *slot = Some(marker);
+        }
     }
 
     // Scroll so the selected train's station stays visible.
@@ -935,8 +942,7 @@ fn draw_track_vertical(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::
         .unwrap_or(0)
         .min(max_scroll);
 
-    // Reserve room after the name for at least one train marker (" ▼#1234").
-    let name_w = (area.width as usize).saturating_sub(11).clamp(6, 20);
+    let name_w = (area.width as usize).saturating_sub(2 * gutter_w + 3).clamp(5, 24);
     let mut lines: Vec<Line> = Vec::new();
     for i in scroll..(scroll + h).min(n) {
         let s = &rt.stations[i];
@@ -951,11 +957,21 @@ fn draw_track_vertical(f: &mut Frame, area: Rect, app: &App, rt: &crate::track::
         } else {
             ('┿', Style::default().fg(color), Style::default().fg(Color::White))
         };
-        let mut spans = vec![
-            Span::styled(format!(" {glyph} "), gstyle),
-            Span::styled(format!("{:<width$}", trunc(&s.name, name_w), width = name_w), nstyle),
-        ];
-        spans.extend(at[i].iter().cloned());
+        let mut spans: Vec<Span> = Vec::new();
+        // inbound gutter — right-aligned against the spine
+        let lw = left[i].as_ref().map(|m| m.width()).unwrap_or(0);
+        spans.push(Span::raw(" ".repeat(gutter_w.saturating_sub(lw))));
+        if let Some(m) = left[i].clone() {
+            spans.push(m);
+        }
+        // spine
+        spans.push(Span::styled(format!(" {glyph} "), gstyle));
+        spans.push(Span::styled(format!("{:<width$}", trunc(&s.name, name_w), width = name_w), nstyle));
+        // outbound gutter — left-aligned
+        if let Some(m) = right[i].clone() {
+            spans.push(Span::raw(" "));
+            spans.push(m);
+        }
         lines.push(Line::from(spans));
     }
     f.render_widget(Paragraph::new(lines), area);
