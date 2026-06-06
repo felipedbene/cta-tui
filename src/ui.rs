@@ -1042,7 +1042,90 @@ fn draw_wide_body(f: &mut Frame, body: Rect, app: &App, blink_on: bool) {
         }
     }
 
-    arrivals_panel(f, cols[2], app, blink_on);
+    draw_right_rail(f, cols[2], app, blink_on);
+}
+
+/// Wide-mode right rail: selected-train detail · AI intel (inline) · home arrivals.
+fn draw_right_rail(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(7),  // SEL detail
+            Constraint::Length(11), // AI intel
+            Constraint::Min(0),     // home arrivals
+        ])
+        .split(area);
+    sel_panel(f, rows[0], app);
+    ai_rail(f, rows[1], app);
+    arrivals_panel(f, rows[2], app, blink_on);
+}
+
+/// Detail card for the cursored train on the focused line (run, line, status,
+/// next stop + ETA, destination). Degrades to a hint when nothing is selected.
+fn sel_panel(f: &mut Frame, area: Rect, app: &App) {
+    let board = app.snap.boards.get(app.focused);
+    let train = board.and_then(|b| b.trains.get(app.selected));
+    let color = board.map(|b| route_color(&b.key)).unwrap_or(GRID);
+    let block = panel_block(
+        Line::from(Span::styled(" ◢ SEL ", Style::default().fg(color).add_modifier(Modifier::BOLD))),
+        color,
+        false,
+    );
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let mut lines: Vec<Line> = Vec::new();
+    if let (Some(b), Some(t)) = (board, train) {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{} #{} ", heading_arrow(t.heading), t.run), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Span::styled(short_line(&format!("{} Line", b.label)), Style::default().fg(DIM)),
+        ]));
+        lines.push(Line::from(if t.delayed {
+            Span::styled("● DELAYED", Style::default().fg(AMBER).add_modifier(Modifier::BOLD))
+        } else if t.approaching {
+            Span::styled("● APPROACHING", Style::default().fg(PHOS).add_modifier(Modifier::BOLD))
+        } else {
+            Span::styled("● ON TIME", Style::default().fg(GRID))
+        }));
+        lines.push(Line::from(vec![
+            Span::styled("→ ", Style::default().fg(DIM)),
+            Span::styled(t.next_station.clone(), Style::default().fg(Color::White)),
+            Span::styled(format!("  {}", fmt_eta(t.eta_min)), Style::default().fg(PHOS)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("▸ ", Style::default().fg(DIM)),
+            Span::styled(t.dest.clone(), Style::default().fg(Color::White)),
+        ]));
+    } else {
+        lines.push(Line::from(Span::styled("no train selected", Style::default().fg(DIM))));
+        lines.push(Line::from(Span::styled("↑/↓ to pick one", Style::default().fg(DIM))));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// AI intel inline on the wide rail (SITREP + event advisory), with a model badge.
+/// The full text stays available behind the `i` overlay.
+fn ai_rail(f: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(GRID))
+        .title_top(Span::styled(" ◢ AI INTEL ", Style::default().fg(GRID).add_modifier(Modifier::BOLD)))
+        .title_top(Line::from(Span::styled(" DEEPSEEK ", Style::default().fg(Color::Black).bg(AMBER))).right_aligned());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    // Cap each section to ~2 wrapped lines so both peek; full text is behind `i`.
+    let bud = (inner.width as usize).saturating_sub(1).saturating_mul(2).max(12);
+    let section = |title: &str, item: &crate::store::AiItem| -> Vec<Line<'static>> {
+        let body = if item.summary.trim().is_empty() { "—".to_string() } else { trunc(&item.summary, bud) };
+        vec![
+            Line::from(Span::styled(title.to_string(), Style::default().fg(AMBER).add_modifier(Modifier::BOLD))),
+            Line::from(Span::styled(body, Style::default().fg(PHOS))),
+        ]
+    };
+    let mut lines: Vec<Line> = Vec::new();
+    lines.extend(section("SITREP", &app.ai.sitrep));
+    lines.push(Line::from(""));
+    lines.extend(section("EVENTS", &app.ai.events));
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 fn draw_train_list(f: &mut Frame, area: Rect, trains: &[crate::cta::Train], selected: usize, color: Color, blink_on: bool) {
