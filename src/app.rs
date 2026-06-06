@@ -32,7 +32,7 @@ pub struct App {
     pub search: Option<Search>,
     pub zoom: Option<Zoom>,
     pub show_alerts: bool,
-    pub vertical: bool, // vertical track orientation
+    pub orient_override: Option<bool>, // None = auto by width; Some = forced (v / CTA_VERTICAL)
     // AI layer (polled by the daemon into local SQLite, read here).
     pub ai: AiState,
     pub show_ai: bool, // intel panel (SITREP + event advisory) overlay
@@ -69,7 +69,7 @@ impl App {
             search: None,
             zoom: None,
             show_alerts: false,
-            vertical: false,
+            orient_override: None,
             ai: AiState::default(),
             show_ai: false,
             voice: false,
@@ -296,8 +296,13 @@ impl App {
         self.show_alerts = !self.show_alerts;
     }
 
+    /// Cycle the orientation override: auto → force-vertical → force-horizontal → auto.
     pub fn toggle_vertical(&mut self) {
-        self.vertical = !self.vertical;
+        self.orient_override = match self.orient_override {
+            None => Some(true),
+            Some(true) => Some(false),
+            Some(false) => None,
+        };
     }
 
     /// Latest AI text from the local cache (written by the daemon). Queues the

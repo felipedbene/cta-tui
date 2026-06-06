@@ -54,6 +54,29 @@ fn scale(c: Color, f: f64) -> Color {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum LayoutMode {
+    Narrow, // < ~90 cols → single vertical strip
+    Normal, // today's horizontal map + 3-column body
+    Wide,   // >= ~140 cols → multi-strip body (stage 3)
+}
+
+const NARROW_MAX: u16 = 90;
+const WIDE_MIN: u16 = 140;
+
+/// Pick the layout from terminal width, honoring an explicit orientation override
+/// (`v` / CTA_VERTICAL): Some(true)=force vertical, Some(false)=force horizontal,
+/// None=auto by width.
+fn layout_mode(width: u16, app: &App) -> LayoutMode {
+    match app.orient_override {
+        Some(true) => LayoutMode::Narrow,
+        Some(false) => LayoutMode::Normal,
+        None if width < NARROW_MAX => LayoutMode::Narrow,
+        None if width >= WIDE_MIN => LayoutMode::Wide,
+        None => LayoutMode::Normal,
+    }
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     let blink_on = (app.frame / 2) % 2 == 0; // ~0.5s on/off at 4 fps
     let sweep = SWEEP[(app.frame as usize / 2) % SWEEP.len()];
@@ -176,6 +199,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(inner);
     dispatch_bar(f, rows[0], app);
 
+    // Wide mode (multi-strip body) lands in stage 3; until then it shares the
+    // Normal horizontal body. Narrow drives the vertical strip.
+    let vertical = layout_mode(inner.width, app) == LayoutMode::Narrow;
+
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -186,7 +213,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(rows[1]);
 
     system_board(f, body[0], app, blink_on);
-    train_panel(f, body[1], app, blink_on);
+    train_panel(f, body[1], app, blink_on, vertical);
     arrivals_panel(f, body[2], app, blink_on);
 
     if app.show_alerts {
@@ -498,7 +525,7 @@ fn system_board(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
     f.render_widget(List::new(items).block(panel_block(title, DIM, false)), area);
 }
 
-fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
+fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool, vertical: bool) {
     // The displayed line is the zoom target if zoomed, else the focused board.
     let key = app.view_route().unwrap_or_default();
     let board = app.snap.boards.iter().find(|b| b.key == key);
@@ -547,7 +574,7 @@ fn train_panel(f: &mut Frame, area: Rect, app: &App, blink_on: bool) {
     f.render_widget(block, area);
 
     // Vertical orientation: a full-height line diagram replaces the map+list.
-    if app.vertical {
+    if vertical {
         if let Some(rt) = branches.first() {
             draw_track_vertical(f, inner, app, rt, &branch_trains(app, branches, 0), color, blink_on);
         }

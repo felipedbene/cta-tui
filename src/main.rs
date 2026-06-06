@@ -75,11 +75,11 @@ async fn main() -> Result<()> {
         std::env::var("CTA_NOTIFY").unwrap_or_default().to_lowercase().as_str(),
         "0" | "false" | "off"
     );
-    // Track orientation defaults to vertical; CTA_VERTICAL=0 starts horizontal.
-    let vertical_default = !matches!(
-        std::env::var("CTA_VERTICAL").unwrap_or_default().to_lowercase().as_str(),
-        "0" | "false" | "off"
-    );
+    // Orientation: auto by terminal width unless CTA_VERTICAL is explicitly set
+    // (then forced vertical, or horizontal for 0/false/off). `v` cycles at runtime.
+    let orient_override: Option<bool> = std::env::var("CTA_VERTICAL")
+        .ok()
+        .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "off"));
 
     // Headless probe: one snapshot to stdout, no terminal. `CTA_PROBE=1 cargo run`.
     if std::env::var("CTA_PROBE").is_ok() {
@@ -132,8 +132,9 @@ async fn main() -> Result<()> {
         if std::env::var("CTA_ALERTS").is_ok() {
             app.show_alerts = true;
         }
+        app.orient_override = orient_override; // honor CTA_VERTICAL in render dumps too
         if std::env::var("CTA_VERT").is_ok() {
-            app.vertical = true;
+            app.orient_override = Some(true);
         }
         let w: u16 = std::env::var("CTA_COLS").ok().and_then(|v| v.parse().ok()).unwrap_or(110);
         let h: u16 = std::env::var("CTA_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(26);
@@ -217,7 +218,7 @@ async fn main() -> Result<()> {
     execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    let res = run(&mut terminal, &mut rx, refresh_tx, home_name, alert_min, notify_enabled, vertical_default, refresh).await;
+    let res = run(&mut terminal, &mut rx, refresh_tx, home_name, alert_min, notify_enabled, orient_override, refresh).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -232,11 +233,11 @@ async fn run<B: ratatui::backend::Backend>(
     home_name: String,
     alert_min: i64,
     notify_enabled: bool,
-    vertical_default: bool,
+    orient_override: Option<bool>,
     refresh: u64,
 ) -> Result<()> {
     let mut app = App::new(home_name, alert_min, notify_enabled);
-    app.vertical = vertical_default;
+    app.orient_override = orient_override;
     app.refresh_secs = refresh;
     let mut events = EventStream::new();
     // ~4 fps render tick so the radar sweep + APP/DLY blink stay alive between polls.
