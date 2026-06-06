@@ -217,7 +217,7 @@ async fn main() -> Result<()> {
     execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    let res = run(&mut terminal, &mut rx, refresh_tx, home_name, alert_min, notify_enabled, vertical_default).await;
+    let res = run(&mut terminal, &mut rx, refresh_tx, home_name, alert_min, notify_enabled, vertical_default, refresh).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -233,9 +233,11 @@ async fn run<B: ratatui::backend::Backend>(
     alert_min: i64,
     notify_enabled: bool,
     vertical_default: bool,
+    refresh: u64,
 ) -> Result<()> {
     let mut app = App::new(home_name, alert_min, notify_enabled);
     app.vertical = vertical_default;
+    app.refresh_secs = refresh;
     let mut events = EventStream::new();
     // ~4 fps render tick so the radar sweep + APP/DLY blink stay alive between polls.
     let mut frame = tokio::time::interval(Duration::from_millis(250));

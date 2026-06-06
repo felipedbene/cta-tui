@@ -94,12 +94,47 @@ pub fn draw(f: &mut Frame, app: &App) {
         scan,
     ]);
 
+    // Telemetry strip (right rule): feed · trains · lines · poll countdown · clock · class.
+    let lines_total = app.snap.statuses.len().max(n_lines);
+    let lines_up = app
+        .snap
+        .statuses
+        .iter()
+        .filter(|s| {
+            let st = s.status.to_lowercase();
+            st.contains("normal") || st.contains("added") || st.contains("good")
+        })
+        .count();
+    let dispatch_stale =
+        app.ai.dispatch.updated_at > 0 && epoch_secs() - app.ai.dispatch.updated_at > 180;
+    let feed_ok = app.snap.error.is_none() && !dispatch_stale;
+    let poll_left = app.poll_left();
+    let (feed_txt, feed_col) = if app.loading {
+        ("ACQUIRING", AMBER)
+    } else if feed_ok {
+        ("FEED NOMINAL", GRID)
+    } else {
+        ("FEED FAULT", AMBER)
+    };
+    let dot_col = if !feed_ok && !blink_on { scale(feed_col, 0.3) } else { feed_col };
+    let sep = || Span::styled(" · ", Style::default().fg(DIM));
+    let dim = |s: &'static str| Span::styled(s, Style::default().fg(DIM));
+    let val = |s: String| Span::styled(s, Style::default().fg(GRID));
     let clock = Line::from(vec![
-        Span::styled("UNCLASS ", Style::default().fg(DIM)),
-        Span::styled(
-            format!(" UPD {} ", app.snap.updated),
-            Style::default().fg(GRID),
-        ),
+        Span::styled("● ", Style::default().fg(dot_col)),
+        Span::styled(feed_txt, Style::default().fg(feed_col)),
+        sep(),
+        dim("TRAINS "),
+        val(format!("{n_trains}")),
+        sep(),
+        dim("LINES "),
+        val(format!("{lines_up}/{lines_total}")),
+        sep(),
+        dim("POLL "),
+        val(format!("{poll_left}s")),
+        sep(),
+        val(format!("{} ", app.snap.updated)),
+        dim("UNCLASS "),
     ])
     .right_aligned();
 

@@ -39,6 +39,9 @@ pub struct App {
     pub voice: bool,               // speak AI text via the OS TTS command
     last_spoken: String,           // last dispatch line spoken (dedupe)
     pending_speak: Option<String>, // utterance queued for main → tts::speak
+    // Telemetry: poll-countdown clock.
+    pub refresh_secs: u64,         // CTA_REFRESH; set by main after construction
+    polled_at_frame: u64,          // app.frame at the last apply() (for the countdown)
     // fio 3 — home-station approach notifier.
     pub alert_min: i64,           // threshold in minutes (0 disables)
     alerted: HashSet<String>,     // runs we've already alerted at the home station
@@ -72,6 +75,8 @@ impl App {
             voice: false,
             last_spoken: String::new(),
             pending_speak: None,
+            refresh_secs: 30,
+            polled_at_frame: 0,
             alert_min,
             alerted: HashSet::new(),
             started: false,
@@ -156,6 +161,7 @@ impl App {
 
     pub fn apply(&mut self, snap: Snapshot) {
         self.loading = false;
+        self.polled_at_frame = self.frame; // stamp for the poll countdown
         if self.focused >= snap.boards.len() {
             self.focused = 0;
         }
@@ -166,6 +172,12 @@ impl App {
         }
         self.check_approach();
         self.check_delays();
+    }
+
+    /// Seconds until the next poll (telemetry countdown; frame ticks at 4 fps).
+    pub fn poll_left(&self) -> u64 {
+        self.refresh_secs
+            .saturating_sub(self.frame.saturating_sub(self.polled_at_frame) / 4)
     }
 
     pub fn next_route(&mut self) {
