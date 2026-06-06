@@ -291,33 +291,7 @@ impl Cta {
             anyhow::bail!(resp.ctatt.err_nm.unwrap_or_else(|| "CTA error".into()));
         }
         let _ = resp.ctatt.tmst;
-
-        let boards = flat(resp.ctatt.route)
-            .into_iter()
-            .map(|r| {
-                let trains = flat(r.train)
-                    .into_iter()
-                    .map(|t| Train {
-                        run: t.rn.unwrap_or_default(),
-                        dest: t.dest_nm.unwrap_or_default(),
-                        next_station: t.next_sta_nm.unwrap_or_default(),
-                        eta_min: eta_minutes(&t.arr_t),
-                        approaching: truthy(&t.is_app),
-                        delayed: truthy(&t.is_dly),
-                        dir: t.tr_dr,
-                        heading: t.heading.and_then(|h| h.parse().ok()),
-                        lat: t.lat.and_then(|v| v.parse().ok()),
-                        lon: t.lon.and_then(|v| v.parse().ok()),
-                    })
-                    .collect();
-                RouteBoard {
-                    label: pretty_route(&r.name),
-                    key: r.name,
-                    trains,
-                }
-            })
-            .collect();
-        Ok(boards)
+        Ok(boards_from_ctatt(resp.ctatt))
     }
 
     async fn arrivals(&self, mapid: &str) -> Result<Vec<Arrival>> {
@@ -418,4 +392,70 @@ pub fn pretty_route(key: &str) -> String {
         other => other,
     }
     .to_string()
+}
+
+// ---------- History / replay (Worker-backed) ----------
+
+/// Map a decoded ttpositions `ctatt` into route boards (shared by the live fetch
+/// and historical replay snapshots).
+fn boards_from_ctatt(ctatt: PosCtatt) -> Vec<RouteBoard> {
+    flat(ctatt.route)
+        .into_iter()
+        .map(|r| {
+            let trains = flat(r.train)
+                .into_iter()
+                .map(|t| Train {
+                    run: t.rn.unwrap_or_default(),
+                    dest: t.dest_nm.unwrap_or_default(),
+                    next_station: t.next_sta_nm.unwrap_or_default(),
+                    eta_min: eta_minutes(&t.arr_t),
+                    approaching: truthy(&t.is_app),
+                    delayed: truthy(&t.is_dly),
+                    dir: t.tr_dr,
+                    heading: t.heading.and_then(|h| h.parse().ok()),
+                    lat: t.lat.and_then(|v| v.parse().ok()),
+                    lon: t.lon.and_then(|v| v.parse().ok()),
+                })
+                .collect();
+            RouteBoard { label: pretty_route(&r.name), key: r.name, trains }
+        })
+        .collect()
+}
+
+/// One row of the replay timeline.
+#[derive(Clone, Deserialize)]
+pub struct Frame {
+    pub id: i64,
+    pub observed_at: i64, // epoch ms
+    #[serde(default)]
+    pub train_count: i64,
+}
+
+#[derive(Deserialize)]
+struct IndexResp {
+    frames: Vec<Frame>,
+}
+
+#[derive(Deserialize)]
+struct HistSnapResp {
+    payload: PosResp,
+}
+
+/// A historical snapshot decoded into renderable boards.
+pub struct HistSnap {
+    pub boards: Vec<RouteBoard>,
+}
+
+/// Fetch the replay frame index over [from_ms, to_ms] from the Worker.
+pub async fn history_index(http: &reqwest::Client, base: &str, from_ms: i64, to_ms: i64) -> Result<Vec<Frame>> {
+    let url = format!("{base}/api/history/index?from={from_ms}&to={to_ms}");
+    let r: IndexResp = http.get(url).send().await?.json().await?;
+    Ok(r.frames)
+}
+
+/// Fetch one historical snapshot and decode its CTA payload into boards.
+pub async fn history_snapshot(http: &reqwest::Client, base: &str, id: i64) -> Result<HistSnap> {
+    let url = format!("{base}/api/history/snapshot?id={id}");
+    let r: HistSnapResp = http.get(url).send().await?.json().await?;
+    Ok(HistSnap { boards: boards_from_ctatt(r.payload.ctatt) })
 }

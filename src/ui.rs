@@ -151,14 +151,18 @@ pub fn draw(f: &mut Frame, app: &App) {
         app.ai.dispatch.updated_at > 0 && epoch_secs() - app.ai.dispatch.updated_at > 180;
     let feed_ok = app.snap.error.is_none() && !dispatch_stale;
     let poll_left = app.poll_left();
-    let (feed_txt, feed_col) = if app.loading {
+    let replaying = app.is_replaying();
+    let (feed_txt, feed_col) = if replaying {
+        ("REPLAY", PHOS)
+    } else if app.loading {
         ("ACQUIRING", AMBER)
     } else if feed_ok {
         ("FEED NOMINAL", GRID)
     } else {
         ("FEED FAULT", AMBER)
     };
-    let dot_col = if !feed_ok && !blink_on { scale(feed_col, 0.3) } else { feed_col };
+    // Pulse the dot while replaying or faulted.
+    let dot_col = if (!feed_ok || replaying) && !blink_on { scale(feed_col, 0.3) } else { feed_col };
     let sep = || Span::styled(" · ", Style::default().fg(DIM));
     let dim = |s: &'static str| Span::styled(s, Style::default().fg(DIM));
     let val = |s: String| Span::styled(s, Style::default().fg(GRID));
@@ -181,7 +185,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     .right_aligned();
 
     let mut legend_spans = Vec::new();
-    for (k, label) in [("/", "FIND"), ("a", "ALERTS"), ("i", "INTEL"), ("l", "LOOP"), ("s", "SPEAK"), ("v", "VERT"), ("q", "QUIT"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
+    for (k, label) in [("/", "FIND"), ("a", "ALERTS"), ("i", "INTEL"), ("l", "LOOP"), ("p", "REPLAY"), ("s", "SPEAK"), ("v", "VERT"), ("q", "QUIT"), ("←/→", "LINE"), ("↑/↓", "TRAIN")] {
         legend_spans.extend(key(k, label));
     }
     let legend = Line::from(legend_spans);
@@ -1126,7 +1130,7 @@ fn draw_bottom_strip(f: &mut Frame, area: Rect, app: &App, vis: &[&str]) {
         .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
         .split(area);
     throughput_panel(f, halves[0], app, vis);
-    replay_stub(f, halves[1]);
+    replay_panel(f, halves[1], app);
 }
 
 /// Per-line `Sparkline` of trains-in-service over the last ~60 polls (route_hist).
@@ -1165,27 +1169,68 @@ fn throughput_panel(f: &mut Frame, area: Rect, app: &App, vis: &[&str]) {
     }
 }
 
-/// REPLAY scrubber placeholder (timeline bar + LIVE marker). Visual only — the
-/// real replay backend is stage 7.
-fn replay_stub(f: &mut Frame, area: Rect) {
+/// REPLAY scrubber. When live, prompts to press `p`; while replaying, shows the
+/// playhead at the scrubbed position with the snapshot's wall-clock time.
+fn replay_panel(f: &mut Frame, area: Rect, app: &App) {
+    let active = app.is_replaying();
+    let (title_col, border_col) = if active { (AMBER, AMBER) } else { (DIM, DIM) };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(DIM))
-        .title_top(Span::styled(" REPLAY ", Style::default().fg(DIM)));
+        .border_style(Style::default().fg(border_col))
+        .title_top(Span::styled(" REPLAY ", Style::default().fg(title_col).add_modifier(Modifier::BOLD)));
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let track = (inner.width as usize).saturating_sub(10);
-    let head = track * 9 / 10; // playhead near "now"
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("◀◀ ", Style::default().fg(PHOS)),
-            Span::styled("▮".repeat(head), Style::default().fg(PHOS)),
-            Span::styled("▯".repeat(track.saturating_sub(head)), Style::default().fg(DIM)),
-            Span::styled(" ▶ ", Style::default().fg(PHOS)),
-            Span::styled("LIVE", Style::default().fg(AMBER).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(Span::styled("−30d  ·········  now   (stub)", Style::default().fg(DIM))),
-    ];
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    // Reserve room for the controls + edge label so nothing clips at the border:
+    // "◀◀ " + ◆ + " ▶▶ " + "▶ LIVE".
+    let track = (inner.width as usize).saturating_sub(15);
+
+    let lines = match app.replay_status() {
+        // Replaying, index loaded.
+        Some((idx, total, ts, count)) if total > 0 => {
+            let head = if total > 1 { idx * track / (total - 1) } else { track };
+            let at_live = idx + 1 == total;
+            let tail = track.saturating_sub(head);
+            let edge = if at_live { "▶ LIVE" } else { "◀ HIST" };
+            let edge_col = if at_live { GRID } else { AMBER };
+            vec![
+                Line::from(vec![
+                    Span::styled("◀◀ ", Style::default().fg(PHOS)),
+                    Span::styled("▮".repeat(head), Style::default().fg(PHOS)),
+                    Span::styled("◆", Style::default().fg(AMBER).add_modifier(Modifier::BOLD)),
+                    Span::styled("▯".repeat(tail), Style::default().fg(DIM)),
+                    Span::styled(" ▶▶ ", Style::default().fg(PHOS)),
+                    Span::styled(edge, Style::default().fg(edge_col).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(vec![
+                    Span::styled(format!("{ts}  "), Style::default().fg(PHOS)),
+                    Span::styled(format!("frame {}/{} · {count} trains", idx + 1, total), Style::default().fg(DIM)),
+                    Span::styled("   ←/→ scrub · esc/p exit", Style::default().fg(DIM)),
+                ]),
+            ]
+        }
+        // Replaying but the index hasn't arrived yet.
+        Some(_) => vec![
+            Line::from(Span::styled("◀◀ ░░░░░░░░░░ ▶▶", Style::default().fg(DIM))),
+            Line::from(Span::styled("acquiring replay index…", Style::default().fg(AMBER))),
+        ],
+        // Live: invite the operator into replay.
+        None => {
+            let head = track * 9 / 10;
+            vec![
+                Line::from(vec![
+                    Span::styled("◀◀ ", Style::default().fg(DIM)),
+                    Span::styled("▮".repeat(head), Style::default().fg(scale(PHOS, 0.5))),
+                    Span::styled("▯".repeat(track.saturating_sub(head)), Style::default().fg(DIM)),
+                    Span::styled(" ▶ ", Style::default().fg(DIM)),
+                    Span::styled("LIVE", Style::default().fg(GRID).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(Span::styled("−30d  ·········  now    press p to replay", Style::default().fg(DIM))),
+            ]
+        }
+    };
     f.render_widget(Paragraph::new(lines), inner);
 }
 

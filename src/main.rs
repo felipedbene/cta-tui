@@ -32,6 +32,28 @@ use tokio::sync::mpsc;
 enum Msg {
     Snap(Snapshot),
     Ai(store::AiState),
+    Frames(Vec<cta::Frame>),
+    ReplaySnap(cta::HistSnap),
+}
+
+/// Fetch the replay frame index (last 30 days) and post it to the UI.
+fn fetch_replay_index(tx: mpsc::Sender<Msg>, http: reqwest::Client, base: String) {
+    tokio::spawn(async move {
+        let now = chrono::Utc::now().timestamp_millis();
+        let from = now - 30 * 24 * 3600 * 1000;
+        if let Ok(frames) = cta::history_index(&http, &base, from, now).await {
+            let _ = tx.send(Msg::Frames(frames)).await;
+        }
+    });
+}
+
+/// Fetch one historical snapshot by frame id and post it to the UI.
+fn fetch_replay_snapshot(tx: mpsc::Sender<Msg>, http: reqwest::Client, base: String, id: i64) {
+    tokio::spawn(async move {
+        if let Ok(hist) = cta::history_snapshot(&http, &base, id).await {
+            let _ = tx.send(Msg::ReplaySnap(hist)).await;
+        }
+    });
 }
 
 #[tokio::main]
@@ -122,6 +144,21 @@ async fn main() -> Result<()> {
         }
         if std::env::var("CTA_LOOP").is_ok() {
             app.show_loop = true;
+        }
+        // Exercise the replay backend off-screen: pull the frame index and the
+        // latest snapshot from the Worker, then draw the frozen frame.
+        if std::env::var("CTA_REPLAY").is_ok() {
+            app.toggle_replay();
+            let http = reqwest::Client::new();
+            let base = ai::base();
+            let now = chrono::Utc::now().timestamp_millis();
+            if let Ok(frames) = cta::history_index(&http, &base, now - 6 * 3600 * 1000, now).await {
+                if let Some(id) = app.set_replay_frames(frames) {
+                    if let Ok(hist) = cta::history_snapshot(&http, &base, id).await {
+                        app.set_replay_snap(hist);
+                    }
+                }
+            }
         }
         // Drive search/zoom for off-screen visual checks.
         if let Ok(q) = std::env::var("CTA_SEARCH") {
@@ -221,7 +258,7 @@ async fn main() -> Result<()> {
     execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    let res = run(&mut terminal, &mut rx, refresh_tx, home_name, alert_min, notify_enabled, orient_override, refresh).await;
+    let res = run(&mut terminal, &mut rx, tx.clone(), refresh_tx, home_name, alert_min, notify_enabled, orient_override, refresh).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -232,6 +269,7 @@ async fn main() -> Result<()> {
 async fn run<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     rx: &mut mpsc::Receiver<Msg>,
+    tx: mpsc::Sender<Msg>,
     refresh_tx: mpsc::Sender<()>,
     home_name: String,
     alert_min: i64,
@@ -242,6 +280,9 @@ async fn run<B: ratatui::backend::Backend>(
     let mut app = App::new(home_name, alert_min, notify_enabled);
     app.orient_override = orient_override;
     app.refresh_secs = refresh;
+    // Replay backend: a shared HTTP client + Worker base for history fetches.
+    let http = reqwest::Client::new();
+    let base = ai::base();
     let mut events = EventStream::new();
     // ~4 fps render tick so the radar sweep + APP/DLY blink stay alive between polls.
     let mut frame = tokio::time::interval(Duration::from_millis(250));
@@ -255,6 +296,13 @@ async fn run<B: ratatui::backend::Backend>(
             Some(msg) = rx.recv() => {
                 match msg {
                     Msg::Ai(ai) => app.set_ai(ai),
+                    Msg::Frames(frames) => {
+                        // Index arrived → load the latest frame's snapshot.
+                        if let Some(id) = app.set_replay_frames(frames) {
+                            fetch_replay_snapshot(tx.clone(), http.clone(), base.clone(), id);
+                        }
+                    }
+                    Msg::ReplaySnap(hist) => app.set_replay_snap(hist),
                     Msg::Snap(snap) => {
                         app.apply(snap);
                         if app.take_bell() {
@@ -298,6 +346,7 @@ async fn run<B: ratatui::backend::Backend>(
                                     if app.show_loop { app.show_loop = false; }
                                     else if app.show_ai { app.show_ai = false; }
                                     else if app.show_alerts { app.show_alerts = false; }
+                                    else if app.is_replaying() { app.exit_replay(); }
                                     else if app.zoom.is_some() { app.clear_zoom(); }
                                     else { app.should_quit = true; }
                                 }
@@ -307,9 +356,27 @@ async fn run<B: ratatui::backend::Backend>(
                                 KeyCode::Char('l') => app.toggle_loop(),
                                 KeyCode::Char('s') => app.toggle_voice(),
                                 KeyCode::Char('v') => app.toggle_vertical(),
+                                KeyCode::Char('p') => {
+                                    // Toggle historical replay; on entry, fetch the frame index.
+                                    if app.toggle_replay() {
+                                        fetch_replay_index(tx.clone(), http.clone(), base.clone());
+                                    }
+                                }
                                 KeyCode::Char('r') => { let _ = refresh_tx.try_send(()); app.loading = true; }
-                                KeyCode::Right | KeyCode::Tab => { app.clear_zoom(); app.next_route(); }
-                                KeyCode::Left  => { app.clear_zoom(); app.prev_route(); }
+                                KeyCode::Right | KeyCode::Tab => {
+                                    if app.is_replaying() {
+                                        if let Some(id) = app.replay_scrub(1) {
+                                            fetch_replay_snapshot(tx.clone(), http.clone(), base.clone(), id);
+                                        }
+                                    } else { app.clear_zoom(); app.next_route(); }
+                                }
+                                KeyCode::Left => {
+                                    if app.is_replaying() {
+                                        if let Some(id) = app.replay_scrub(-1) {
+                                            fetch_replay_snapshot(tx.clone(), http.clone(), base.clone(), id);
+                                        }
+                                    } else { app.clear_zoom(); app.prev_route(); }
+                                }
                                 KeyCode::Down  => app.select_next(),
                                 KeyCode::Up    => app.select_prev(),
                                 _ => {}

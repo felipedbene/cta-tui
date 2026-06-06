@@ -1,6 +1,6 @@
 //! UI-side application state.
 
-use crate::cta::Snapshot;
+use crate::cta::{Frame, HistSnap, Snapshot};
 use crate::store::AiState;
 use crate::track::TrackMap;
 use ratatui::style::Color;
@@ -11,6 +11,12 @@ pub struct Search {
     pub query: String,
     pub matches: Vec<usize>, // indices into TrackMap::station_index()
     pub cursor: usize,
+}
+
+/// Active historical replay: the fetched frame index + scrubber position.
+pub struct Replay {
+    pub frames: Vec<Frame>, // ascending by observed_at
+    pub idx: usize,         // scrubber position into frames
 }
 
 /// A station the map is zoomed in on.
@@ -33,6 +39,10 @@ pub struct App {
     pub zoom: Option<Zoom>,
     pub show_alerts: bool,
     pub orient_override: Option<bool>, // None = auto by width; Some = forced (v / CTA_VERTICAL)
+    // Stage 7b — historical replay (Worker-backed). `live_snap` parks the live
+    // feed while a frozen frame is on screen in `snap`.
+    pub replay: Option<Replay>,
+    live_snap: Option<Snapshot>,
     // AI layer (polled by the daemon into local SQLite, read here).
     pub ai: AiState,
     pub show_ai: bool,   // intel panel (SITREP + event advisory) overlay
@@ -72,6 +82,8 @@ impl App {
             zoom: None,
             show_alerts: false,
             orient_override: None,
+            replay: None,
+            live_snap: None,
             ai: AiState::default(),
             show_ai: false,
             show_loop: false,
@@ -166,6 +178,19 @@ impl App {
     pub fn apply(&mut self, snap: Snapshot) {
         self.loading = false;
         self.polled_at_frame = self.frame; // stamp for the poll countdown
+        // Per-route history for the throughput sparklines (cap ~60 polls).
+        for b in &snap.boards {
+            let buf = self.route_hist.entry(b.key.clone()).or_default();
+            buf.push_back(b.trains.len() as u16);
+            while buf.len() > 60 {
+                buf.pop_front();
+            }
+        }
+        // While replaying, hold live data aside and keep the frozen frame on screen.
+        if self.replay.is_some() {
+            self.live_snap = Some(snap);
+            return;
+        }
         if self.focused >= snap.boards.len() {
             self.focused = 0;
         }
@@ -173,14 +198,6 @@ impl App {
         let len = self.focused_len();
         if self.selected >= len {
             self.selected = len.saturating_sub(1);
-        }
-        // Per-route history for the throughput sparklines (cap ~60 polls).
-        for b in &self.snap.boards {
-            let buf = self.route_hist.entry(b.key.clone()).or_default();
-            buf.push_back(b.trains.len() as u16);
-            while buf.len() > 60 {
-                buf.pop_front();
-            }
         }
         self.check_approach();
         self.check_delays();
@@ -341,6 +358,95 @@ impl App {
         self.show_loop = !self.show_loop;
     }
 
+    // --- Stage 7b: historical replay ---
+
+    /// Toggle replay. Returns true when we just entered replay (the caller then
+    /// fetches the frame index from the Worker).
+    pub fn toggle_replay(&mut self) -> bool {
+        if self.replay.is_some() {
+            self.exit_replay();
+            false
+        } else {
+            self.enter_replay();
+            true
+        }
+    }
+
+    fn enter_replay(&mut self) {
+        if self.replay.is_none() {
+            self.live_snap = Some(std::mem::take(&mut self.snap));
+            self.replay = Some(Replay { frames: Vec::new(), idx: 0 });
+            self.loading = true;
+        }
+    }
+
+    pub fn exit_replay(&mut self) {
+        if let Some(live) = self.live_snap.take() {
+            self.snap = live;
+        }
+        self.replay = None;
+        self.loading = false;
+        if self.focused >= self.snap.boards.len() {
+            self.focused = 0;
+        }
+        let len = self.focused_len();
+        if self.selected >= len {
+            self.selected = len.saturating_sub(1);
+        }
+    }
+
+    pub fn is_replaying(&self) -> bool {
+        self.replay.is_some()
+    }
+
+    /// Install the fetched frame index; returns the latest frame id to load.
+    pub fn set_replay_frames(&mut self, frames: Vec<Frame>) -> Option<i64> {
+        let r = self.replay.as_mut()?;
+        if frames.is_empty() {
+            return None;
+        }
+        r.frames = frames;
+        r.idx = r.frames.len() - 1;
+        r.frames.get(r.idx).map(|f| f.id)
+    }
+
+    /// Move the scrubber; returns the frame id to load when the position changes.
+    pub fn replay_scrub(&mut self, delta: i32) -> Option<i64> {
+        let r = self.replay.as_mut()?;
+        if r.frames.is_empty() {
+            return None;
+        }
+        let max = r.frames.len() as i32 - 1;
+        let ni = (r.idx as i32 + delta).clamp(0, max) as usize;
+        if ni == r.idx {
+            return None;
+        }
+        r.idx = ni;
+        r.frames.get(ni).map(|f| f.id)
+    }
+
+    /// Install a fetched historical snapshot for display.
+    pub fn set_replay_snap(&mut self, hist: HistSnap) {
+        self.snap = Snapshot { boards: hist.boards, ..Snapshot::default() };
+        self.loading = false;
+        if self.focused >= self.snap.boards.len() {
+            self.focused = 0;
+        }
+        let len = self.focused_len();
+        if self.selected >= len {
+            self.selected = len.saturating_sub(1);
+        }
+    }
+
+    /// Scrubber state for the replay UI: (position, total, local HH:MM:SS, train_count).
+    pub fn replay_status(&self) -> Option<(usize, usize, String, i64)> {
+        let r = self.replay.as_ref()?;
+        let cur = r.frames.get(r.idx);
+        let ts = cur.map(|f| fmt_hms(f.observed_at)).unwrap_or_else(|| "--:--:--".into());
+        let count = cur.map_or(0, |f| f.train_count);
+        Some((r.idx, r.frames.len(), ts, count))
+    }
+
     pub fn toggle_voice(&mut self) {
         self.voice = !self.voice;
         if self.voice {
@@ -393,6 +499,15 @@ impl App {
             return Some(z.route.clone());
         }
         self.snap.boards.get(self.focused).map(|b| b.key.clone())
+    }
+}
+
+/// Format an epoch-ms instant as local HH:MM:SS for the replay scrubber.
+fn fmt_hms(ms: i64) -> String {
+    use chrono::{Local, TimeZone};
+    match Local.timestamp_millis_opt(ms).single() {
+        Some(dt) => dt.format("%H:%M:%S").to_string(),
+        None => "--:--:--".to_string(),
     }
 }
 

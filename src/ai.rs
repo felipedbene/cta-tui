@@ -7,7 +7,7 @@
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 
-fn base() -> String {
+pub fn base() -> String {
     std::env::var("CTA_AI_BASE")
         .unwrap_or_else(|_| "https://cta-track-grid.felipe-debene.workers.dev".into())
 }
