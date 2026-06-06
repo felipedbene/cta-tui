@@ -4,7 +4,7 @@ use crate::cta::Snapshot;
 use crate::store::AiState;
 use crate::track::TrackMap;
 use ratatui::style::Color;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Active station fuzzy-search overlay.
 pub struct Search {
@@ -42,6 +42,7 @@ pub struct App {
     // Telemetry: poll-countdown clock.
     pub refresh_secs: u64,         // CTA_REFRESH; set by main after construction
     polled_at_frame: u64,          // app.frame at the last apply() (for the countdown)
+    pub route_hist: HashMap<String, VecDeque<u16>>, // per-route train counts (throughput sparklines)
     // fio 3 — home-station approach notifier.
     pub alert_min: i64,           // threshold in minutes (0 disables)
     alerted: HashSet<String>,     // runs we've already alerted at the home station
@@ -77,6 +78,7 @@ impl App {
             pending_speak: None,
             refresh_secs: 30,
             polled_at_frame: 0,
+            route_hist: HashMap::new(),
             alert_min,
             alerted: HashSet::new(),
             started: false,
@@ -169,6 +171,14 @@ impl App {
         let len = self.focused_len();
         if self.selected >= len {
             self.selected = len.saturating_sub(1);
+        }
+        // Per-route history for the throughput sparklines (cap ~60 polls).
+        for b in &self.snap.boards {
+            let buf = self.route_hist.entry(b.key.clone()).or_default();
+            buf.push_back(b.trains.len() as u16);
+            while buf.len() > 60 {
+                buf.pop_front();
+            }
         }
         self.check_approach();
         self.check_delays();

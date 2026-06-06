@@ -11,7 +11,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Sparkline, Wrap},
     Frame,
 };
 
@@ -1018,17 +1018,24 @@ fn render_line_strip(f: &mut Frame, area: Rect, app: &App, key: &str, focused: b
 /// Wide layout: SYS board | N side-by-side vertical line strips | right rail.
 /// `←/→` (next_route/prev_route) scrolls the window of visible lines.
 fn draw_wide_body(f: &mut Frame, body: Rect, app: &App, blink_on: bool) {
+    // Reserve a bottom strip for throughput sparklines + the replay scrubber.
+    let vsplit = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(7)])
+        .split(body);
+
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(24), // SYS board
             Constraint::Min(0),     // center strips
-            Constraint::Length(30), // right rail (arrivals; stacked in stage 5)
+            Constraint::Length(30), // right rail
         ])
-        .split(body);
+        .split(vsplit[0]);
     system_board(f, cols[0], app, blink_on);
 
     let keys: Vec<&str> = app.snap.boards.iter().map(|b| b.key.as_str()).collect();
+    let mut vis: Vec<&str> = Vec::new();
     if !keys.is_empty() {
         let min_cols = 26u16;
         let n = ((cols[1].width / min_cols).max(1) as usize).min(keys.len());
@@ -1039,10 +1046,82 @@ fn draw_wide_body(f: &mut Frame, body: Rect, app: &App, blink_on: bool) {
             .split(cols[1]);
         for (slot, &idx) in slots.iter().zip(win.iter()) {
             render_line_strip(f, *slot, app, keys[idx], idx == app.focused, blink_on);
+            vis.push(keys[idx]);
         }
     }
 
     draw_right_rail(f, cols[2], app, blink_on);
+    draw_bottom_strip(f, vsplit[1], app, &vis);
+}
+
+/// Bottom strip: per-visible-line throughput sparklines | replay scrubber stub.
+fn draw_bottom_strip(f: &mut Frame, area: Rect, app: &App, vis: &[&str]) {
+    let halves = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .split(area);
+    throughput_panel(f, halves[0], app, vis);
+    replay_stub(f, halves[1]);
+}
+
+/// Per-line `Sparkline` of trains-in-service over the last ~60 polls (route_hist).
+fn throughput_panel(f: &mut Frame, area: Rect, app: &App, vis: &[&str]) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(DIM))
+        .title_top(Span::styled(" THROUGHPUT · trains in service ", Style::default().fg(DIM)));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if vis.is_empty() || inner.height == 0 {
+        return;
+    }
+    let count = vis.len().min(inner.height as usize);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![Constraint::Length(1); count])
+        .split(inner);
+    for (row, &key) in rows.iter().zip(vis.iter()) {
+        let color = route_color(key);
+        let label = app.snap.boards.iter().find(|b| b.key == key).map(|b| b.label.as_str()).unwrap_or(key);
+        let cells = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(5), Constraint::Min(0)])
+            .split(*row);
+        f.render_widget(
+            Paragraph::new(Span::styled(format!("{:<4}", short_line(&format!("{label} Line"))), Style::default().fg(color))),
+            cells[0],
+        );
+        let data: Vec<u64> = app
+            .route_hist
+            .get(key)
+            .map(|q| q.iter().map(|&v| v as u64).collect())
+            .unwrap_or_default();
+        f.render_widget(Sparkline::default().data(&data).style(Style::default().fg(color)), cells[1]);
+    }
+}
+
+/// REPLAY scrubber placeholder (timeline bar + LIVE marker). Visual only — the
+/// real replay backend is stage 7.
+fn replay_stub(f: &mut Frame, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(DIM))
+        .title_top(Span::styled(" REPLAY ", Style::default().fg(DIM)));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let track = (inner.width as usize).saturating_sub(10);
+    let head = track * 9 / 10; // playhead near "now"
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("◀◀ ", Style::default().fg(PHOS)),
+            Span::styled("▮".repeat(head), Style::default().fg(PHOS)),
+            Span::styled("▯".repeat(track.saturating_sub(head)), Style::default().fg(DIM)),
+            Span::styled(" ▶ ", Style::default().fg(PHOS)),
+            Span::styled("LIVE", Style::default().fg(AMBER).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(Span::styled("−30d  ·········  now   (stub)", Style::default().fg(DIM))),
+    ];
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Wide-mode right rail: selected-train detail · AI intel (inline) · home arrivals.
