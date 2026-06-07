@@ -1,6 +1,6 @@
 [package]
 name = "cta-tui"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 description = "NORAD-style Chicago 'L' train board in the terminal"
 
